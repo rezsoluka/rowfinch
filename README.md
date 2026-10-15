@@ -10,7 +10,7 @@ The self-contained `.deb` includes .NET, a desktop launcher, and the Rowfinch ic
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./artifacts/packages/rowfinch_0.1.0_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.1_amd64.deb
 rowfinch
 ```
 
@@ -49,8 +49,8 @@ dotnet run --project src/Rowfinch.Desktop -- --demo
 - Saved connection profiles, with no passwords or tokens in the profile file.
 - Optional SQL-password storage in Ubuntu's desktop keyring, just-in-time retrieval, and a Forget saved password action.
 - A persistent database session, SQL-aware `GO` batches (including `GO n`, with a repeat limit of 100), and multiple result sets.
-- Filterable object browser for tables, views, procedures, and functions, with lazy column loading, SQL types, nullability, and primary-key positions.
-- Object actions for top-100 previews, explicit-column SELECT generation, opening SQL definitions, copying qualified names, and individual column refresh.
+- Vertical Connections/Objects sidebar tabs, combined object-type and text filters, lazy column metadata, and selectable columns.
+- Object actions for top-100 previews, SELECT/INSERT/UPDATE templates from selected columns, SQL definitions, copying qualified names, and individual column refresh.
 - Cancellation, query timeouts, affected-row counts, SQL error messages, and transaction-state display with commit/rollback actions.
 - Virtualized results, selectable cell text, copying selected rows, and CSV export of displayed rows.
 - A clearly labeled demo workspace and automated tests that do not require database credentials.
@@ -74,20 +74,28 @@ Closing an unsaved tab offers **Save and close**, **Close without saving**, and 
 
 Connection profiles are stored at `$XDG_CONFIG_HOME/rowfinch/connections.json`, or `~/.config/rowfinch/connections.json` when XDG_CONFIG_HOME is unset or relative. The file contains connection metadata and the remember-password preference, never the password or access token. Existing profile files load with remembering disabled by default. Entra authentication requires your user to have database access and the server to be configured for it. The Microsoft identity provider handles browser sign-in.
 
-## Object browser
+## Sidebar and object browser
 
-Expand a table or view to load its columns. Each column shows its SQL type, nullability, primary-key position (for composite keys), and identity/computed/hidden flags when applicable. Column metadata is cached in that tab; filtering and collapsing preserve it. **Refresh** reloads the object list and clears its metadata cache. Right-click an individual table or view and choose **Refresh columns** to reload only that object's columns.
+The left sidebar has vertical **Connections** and **Objects** tabs. Each page uses the full sidebar height, with its own scrolling list. Connection details are collapsible; when saved profiles are available, the list opens with details collapsed. Selecting a profile or choosing **+ New** opens the details. Connect/Disconnect stay visible below the form. Successful connection or demo startup opens Objects. Each query tab keeps its own sidebar page, filters, metadata, and column choices.
 
-Right-click an object for its available actions:
+In Objects, choose **All** or combine **Tables**, **Views**, **Procedures**, and **Functions**. The text filter applies within the chosen types. Clearing the last type selection returns to All. Filtering preserves expanded objects and their selected columns.
 
-- **Select top 100** runs a preview in the source tab's existing session and shows its results without changing the editor. The display row limit still applies; the server returns at most 100 rows. No ordering is implied.
-- **Generate SELECT in new tab** lists visible columns explicitly in schema order, with SQL identifier escaping.
+Expand a table or view to load its columns. Each column shows its SQL type, nullability, primary-key position (including composite keys), and identity/computed/hidden/generated flags when applicable. Visible columns start selected; toggle their checkboxes or use **Select all** / **Unselect all** below the object name. Hidden columns are excluded from selection. **Refresh columns** reloads that object's metadata and preserves choices by column name; newly discovered visible columns start selected. The main **Refresh** reloads the whole object list and resets loaded metadata and column choices.
+
+Right-click an object or one of its columns for the available actions:
+
+- **Select top 100** runs a preview in the source tab's existing session, preserving the editor. It previews all visible columns regardless of the checkbox selection; the display row limit still applies. No ordering is implied.
+- **Generate SELECT in new tab** includes only the checked visible columns, in schema order.
+- **Generate INSERT in new tab** includes checked writable columns with `<value_n>` placeholders. Identity, computed, hidden, generated-always, and rowversion columns are omitted. Unselected columns rely on database defaults or nullability.
+- **Generate UPDATE in new tab** places checked writable non-key columns in SET. All primary-key columns form the WHERE predicate, including keys that were not checked. When no primary key is available, the template requires a `<row_filter>` predicate. Key and server-managed columns are excluded from SET.
 - **Open definition in new tab** reads a view, procedure, or function's SQL definition. Double-clicking a procedure or function opens its definition too.
 - **Copy qualified name** copies the escaped `[schema].[object]` name.
 
+Replace every `<...>` placeholder before running an INSERT or UPDATE template. These are draft scripts; generation never executes them. A view must be updatable for a write template to succeed. Selecting no columns, or only columns unsuitable for the requested write, produces guidance without opening an empty script.
+
 Generated SQL and definitions open as unsaved documents with the source tab's connection settings and no copied password. They start disconnected; connect explicitly before running them. Reading metadata preserves the original SQL and results, uses the current database session, and supports cancellation. Other tabs remain usable while metadata loads.
 
-Objects and columns reflect the connected user's metadata visibility. Definitions may require `VIEW DEFINITION` permission; encrypted modules and CLR objects have no readable SQL definition. Missing metadata is reported in Messages with a retry/refresh path. The browser never changes database objects. See Microsoft's [column catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-columns-transact-sql) and [SQL module catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-sql-modules-transact-sql) documentation.
+Objects and columns reflect the connected user's metadata visibility. Definitions may require `VIEW DEFINITION` permission; encrypted modules and CLR objects have no readable SQL definition. Missing metadata is reported in Messages with a retry/refresh path. See Microsoft's [column catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-columns-transact-sql), [rowversion](https://learn.microsoft.com/en-us/sql/t-sql/data-types/rowversion-transact-sql), and [SQL module catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-sql-modules-transact-sql) documentation.
 
 ## Password keyring
 
@@ -130,6 +138,14 @@ A live Azure connection and SELECT have been manually verified on the target Ubu
 4. Add optional query history and SQLCMD script execution.
 
 The core models, SQL batch parser, and export code live in `Rowfinch.Core`; connection handling and profile persistence live in `Rowfinch.Infrastructure`; Avalonia views and view models live in `Rowfinch.Desktop`.
+
+## Versioning
+
+The application version is defined once in `Directory.Build.props`. The header badge, `rowfinch --version`, and default Ubuntu package version all use that value. Hover over the badge to see the full assembly build version, including SDK-supplied commit metadata when available. Prerelease labels such as `0.2.0-beta.1` stay visible.
+
+We use [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While Rowfinch is in initial `0.x` development, minor bumps cover substantial features or compatibility changes; patch bumps cover fixes and small UI improvements. Version `1.0.0` will mark the first stable compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for changes.
+
+For a release, update the central version and changelog, build/test the app and package, and tag the release commit as `vX.Y.Z` (for example, `v0.1.1`). Keep released tags and packages unchanged; publish a new version for subsequent changes. Local builds can override the version with `dotnet build -p:Version=0.2.0-beta.1` or `./scripts/build-deb.sh --version 0.2.0-beta.1` without editing the source version. Debian packages represent the prerelease separator as `~`.
 
 ## Contributing and license
 

@@ -4,75 +4,122 @@
              xmlns:editor="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
              x:Class="Rowfinch.Desktop.Views.QueryTabView" IsEnabled="{Binding !IsClosing}">
   <Grid RowDefinitions="*,34">
-    <Grid Grid.Row="0" ColumnDefinitions="300,5,*">
-      <Border Background="#141E1F" Padding="18,20,18,12">
-        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-          <StackPanel Spacing="12">
-            <Grid ColumnDefinitions="*,Auto">
-              <TextBlock Text="CONNECTIONS" Classes="section" VerticalAlignment="Center" />
-              <Button Grid.Column="1" Content="+ New" Command="{Binding NewProfileCommand}" IsEnabled="{Binding CanEditConnection}" Padding="8,4" />
-            </Grid>
-            <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
-                     IsEnabled="{Binding CanEditConnection}" MaxHeight="140" MinHeight="36" Background="Transparent">
-              <ListBox.ItemTemplate>
-                <DataTemplate>
-                  <StackPanel Spacing="3" Margin="0,3">
-                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding Database}" Classes="muted" FontSize="11" />
-                  </StackPanel>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-            <StackPanel Spacing="9" IsEnabled="{Binding CanEditConnection}">
-              <TextBox Text="{Binding ProfileName, Mode=TwoWay}" PlaceholderText="Connection name" />
-              <TextBlock Text="Server" Classes="muted" FontSize="11" />
-              <TextBox Text="{Binding Server, Mode=TwoWay}" PlaceholderText="your-server.database.windows.net" />
-              <TextBlock Text="Database" Classes="muted" FontSize="11" />
-              <TextBox Text="{Binding Database, Mode=TwoWay}" PlaceholderText="Database name" />
-              <ComboBox ItemsSource="{Binding AuthenticationOptions}" SelectedIndex="{Binding AuthenticationIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" FontSize="11" />
-              <TextBox Text="{Binding UserName, Mode=TwoWay}" PlaceholderText="User name / optional Entra sign-in hint" FontSize="12" />
-              <TextBox x:Name="PasswordInput" Text="{Binding Password, Mode=TwoWay}" PasswordChar="●" PlaceholderText="{Binding PasswordPlaceholder}" IsVisible="{Binding IsSqlAuthentication}" />
-              <CheckBox x:Name="RememberPasswordCheckBox" Content="Remember password" IsChecked="{Binding RememberPassword, Mode=TwoWay}" IsVisible="{Binding IsSqlAuthentication}" />
-            </StackPanel>
-            <Grid ColumnDefinitions="*,8,*">
-              <Button Content="Connect" Classes="primary" Command="{Binding ConnectCommand}" HorizontalAlignment="Stretch" />
-              <Button Grid.Column="2" Content="Disconnect" Click="OnDisconnect" IsEnabled="{Binding CanExecute}" HorizontalAlignment="Stretch" />
-            </Grid>
-            <Grid ColumnDefinitions="*,8,*">
-              <Button Content="Save profile" Command="{Binding SaveProfileCommand}" HorizontalAlignment="Stretch" />
-              <Button Grid.Column="2" Content="Try demo" Command="{Binding DemoCommand}" HorizontalAlignment="Stretch" />
-            </Grid>
-            <StackPanel Spacing="7" IsVisible="{Binding IsSqlAuthentication}">
-              <TextBlock x:Name="KeyringStatus" Text="{Binding KeyringMessage}" Classes="muted" FontSize="11" TextWrapping="Wrap" />
-              <Button x:Name="ForgetPasswordButton" Content="Forget saved password" Command="{Binding ForgetPasswordCommand}" HorizontalAlignment="Stretch" FontSize="12" />
-            </StackPanel>
-
-            <Border Height="1" Background="#2A3B39" Margin="0,8" />
-            <Grid ColumnDefinitions="*,Auto">
-              <TextBlock Text="DATABASE OBJECTS" Classes="section" VerticalAlignment="Center" />
-              <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshObjectsCommand}" Padding="7,4" FontSize="11" />
-            </Grid>
-            <TextBox Text="{Binding ObjectFilter, Mode=TwoWay}" PlaceholderText="Filter objects…" />
-            <TextBlock Text="Expand tables and views for columns. Right-click for SQL actions." Classes="muted" FontSize="11" TextWrapping="Wrap" />
-            <TreeView x:Name="ObjectTree" ItemsSource="{Binding Objects}" Background="Transparent" MinHeight="70" MaxHeight="440" IsEnabled="{Binding CanExecute}">
-              <TreeView.Styles>
-                <Style Selector="TreeViewItem">
-                  <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
-                </Style>
-              </TreeView.Styles>
-              <TreeView.ItemTemplate>
-                <TreeDataTemplate DataType="vm:ObjectBrowserNode" ItemsSource="{Binding Children}">
-                  <Grid Background="Transparent" ContextRequested="OnObjectContextRequested" DoubleTapped="OnObjectDoubleTapped" Margin="0,4" MinWidth="140">
-                    <StackPanel Spacing="3">
-                      <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Label}" />
-                      <TextBlock Text="{Binding Detail}" Classes="muted" FontSize="10" TextWrapping="Wrap" />
+    <Grid Grid.Row="0" ColumnDefinitions="340,5,*">
+      <Border Background="#141E1F" MinWidth="300">
+        <TabControl x:Name="SidebarTabs" TabStripPlacement="Left" SelectedIndex="{Binding SidebarTabIndex, Mode=TwoWay}"
+                    HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" Background="Transparent">
+          <TabControl.Styles>
+            <Style Selector="TabItem"><Setter Property="FontSize" Value="11" /><Setter Property="Width" Value="40" /><Setter Property="Padding" Value="10,14" /></Style>
+          </TabControl.Styles>
+          <TabItem x:Name="ConnectionsSidebarTab" AutomationProperties.Name="Connections" ToolTip.Tip="Connections">
+            <TabItem.Header>
+              <LayoutTransformControl>
+                <LayoutTransformControl.LayoutTransform><RotateTransform Angle="-90" /></LayoutTransformControl.LayoutTransform>
+                <TextBlock Text="Connections" />
+              </LayoutTransformControl>
+            </TabItem.Header>
+            <Grid x:Name="ConnectionsPage" RowDefinitions="Auto,*,Auto,Auto" Margin="12,16,12,10" SizeChanged="OnConnectionsPageSizeChanged">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="CONNECTIONS" Classes="section" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="+ New" Command="{Binding NewProfileCommand}" Padding="8,4" />
+              </Grid>
+              <ListBox x:Name="ConnectionList" Grid.Row="1" Margin="0,12" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
+                       IsEnabled="{Binding CanEditConnection}" MinHeight="60" Background="Transparent">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <StackPanel Spacing="3" Margin="0,3">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Database}" Classes="muted" FontSize="11" />
                     </StackPanel>
-                  </Grid>
-                </TreeDataTemplate>
-              </TreeView.ItemTemplate>
-            </TreeView>
-          </StackPanel>
-        </ScrollViewer>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <Expander x:Name="ConnectionDetails" Grid.Row="2" Header="Connection details" IsExpanded="{Binding ConnectionDetailsExpanded, Mode=TwoWay}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" MaxHeight="560">
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Spacing="12" Margin="0,8,0,0">
+                    <StackPanel Spacing="9" IsEnabled="{Binding CanEditConnection}">
+                      <TextBox Text="{Binding ProfileName, Mode=TwoWay}" PlaceholderText="Connection name" />
+                      <TextBlock Text="Server" Classes="muted" FontSize="11" />
+                      <TextBox Text="{Binding Server, Mode=TwoWay}" PlaceholderText="your-server.database.windows.net" />
+                      <TextBlock Text="Database" Classes="muted" FontSize="11" />
+                      <TextBox Text="{Binding Database, Mode=TwoWay}" PlaceholderText="Database name" />
+                      <ComboBox ItemsSource="{Binding AuthenticationOptions}" SelectedIndex="{Binding AuthenticationIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" FontSize="11" />
+                      <TextBox Text="{Binding UserName, Mode=TwoWay}" PlaceholderText="User name / optional Entra sign-in hint" FontSize="12" />
+                      <TextBox x:Name="PasswordInput" Text="{Binding Password, Mode=TwoWay}" PasswordChar="●" PlaceholderText="{Binding PasswordPlaceholder}" IsVisible="{Binding IsSqlAuthentication}" />
+                      <CheckBox x:Name="RememberPasswordCheckBox" Content="Remember password" IsChecked="{Binding RememberPassword, Mode=TwoWay}" IsVisible="{Binding IsSqlAuthentication}" />
+                    </StackPanel>
+
+                    <Grid ColumnDefinitions="*,8,*">
+                      <Button Content="Save profile" Command="{Binding SaveProfileCommand}" HorizontalAlignment="Stretch" />
+                      <Button Grid.Column="2" Content="Try demo" Command="{Binding DemoCommand}" HorizontalAlignment="Stretch" />
+                    </Grid>
+                    <StackPanel Spacing="7" IsVisible="{Binding IsSqlAuthentication}">
+                      <TextBlock x:Name="KeyringStatus" Text="{Binding KeyringMessage}" Classes="muted" FontSize="11" TextWrapping="Wrap" />
+                      <Button x:Name="ForgetPasswordButton" Content="Forget saved password" Command="{Binding ForgetPasswordCommand}" HorizontalAlignment="Stretch" FontSize="12" />
+                    </StackPanel>
+                  </StackPanel>
+                </ScrollViewer>
+              </Expander>
+              <Grid Grid.Row="3" ColumnDefinitions="*,8,*" Margin="0,10,0,0">
+                <Button Content="Connect" Classes="primary" Command="{Binding ConnectCommand}" HorizontalAlignment="Stretch" />
+                <Button Grid.Column="2" Content="Disconnect" Click="OnDisconnect" IsEnabled="{Binding CanExecute}" HorizontalAlignment="Stretch" />
+              </Grid>
+            </Grid>
+          </TabItem>
+          <TabItem x:Name="ObjectsSidebarTab" AutomationProperties.Name="Objects" ToolTip.Tip="Objects">
+            <TabItem.Header>
+              <LayoutTransformControl>
+                <LayoutTransformControl.LayoutTransform><RotateTransform Angle="-90" /></LayoutTransformControl.LayoutTransform>
+                <TextBlock Text="Objects" />
+              </LayoutTransformControl>
+            </TabItem.Header>
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto" Margin="12,16,12,10" RowSpacing="10">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="DATABASE OBJECTS" Classes="section" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshObjectsCommand}" Padding="7,4" FontSize="11" />
+              </Grid>
+              <TextBox x:Name="ObjectFilterInput" Grid.Row="1" Text="{Binding ObjectFilter, Mode=TwoWay}" PlaceholderText="Filter objects…" />
+              <WrapPanel Grid.Row="2" ItemSpacing="8">
+                <RadioButton x:Name="AllTypesFilter" Content="All" IsChecked="{Binding AllObjectTypes, Mode=TwoWay}" FontSize="11" MinHeight="26" />
+                <CheckBox x:Name="TablesTypeFilter" Content="Tables" IsChecked="{Binding ShowTables, Mode=TwoWay}" FontSize="11" MinHeight="26" />
+                <CheckBox x:Name="ViewsTypeFilter" Content="Views" IsChecked="{Binding ShowViews, Mode=TwoWay}" FontSize="11" MinHeight="26" />
+                <CheckBox Content="Procedures" IsChecked="{Binding ShowProcedures, Mode=TwoWay}" FontSize="11" MinHeight="26" />
+                <CheckBox Content="Functions" IsChecked="{Binding ShowFunctions, Mode=TwoWay}" FontSize="11" MinHeight="26" />
+              </WrapPanel>
+              <TextBlock Grid.Row="3" Text="Expand an object and check columns. Right-click to generate SQL." Classes="muted" FontSize="11" TextWrapping="Wrap" />
+              <TreeView x:Name="ObjectTree" Grid.Row="4" ItemsSource="{Binding Objects}" Background="Transparent" Padding="0" BorderThickness="0"
+                        ScrollViewer.HorizontalScrollBarVisibility="Disabled" IsEnabled="{Binding CanExecute}">
+                <TreeView.Styles>
+                  <Style Selector="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                  </Style>
+                </TreeView.Styles>
+                <TreeView.ItemTemplate>
+                  <TreeDataTemplate DataType="vm:ObjectBrowserNode" ItemsSource="{Binding Children}">
+                    <Grid Background="Transparent" ContextRequested="OnObjectContextRequested" DoubleTapped="OnObjectDoubleTapped" Margin="0,4"
+                          ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
+                      <CheckBox IsVisible="{Binding IsSelectableColumn}" IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                MinWidth="0" MinHeight="22" Margin="0,0,6,0" Padding="0" VerticalAlignment="Top" ToolTip.Tip="Include this column in generated SQL" />
+                      <StackPanel Grid.Column="1" Spacing="3">
+                        <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Label}" />
+                        <TextBlock Text="{Binding Detail}" Classes="muted" FontSize="10" TextWrapping="Wrap" />
+                      </StackPanel>
+                      <StackPanel Grid.Row="1" Grid.ColumnSpan="2" IsVisible="{Binding HasColumnActions}" Spacing="5" Margin="0,6,0,2">
+                        <TextBlock Text="{Binding SelectionSummary}" Classes="muted" FontSize="10" />
+                        <WrapPanel ItemSpacing="5">
+                          <Button Content="Select all" Command="{Binding SelectAllColumnsCommand}" FontSize="10" Padding="5,3" />
+                          <Button Content="Unselect all" Command="{Binding UnselectAllColumnsCommand}" FontSize="10" Padding="5,3" />
+                        </WrapPanel>
+                      </StackPanel>
+                    </Grid>
+                  </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+              </TreeView>
+              <TextBlock Grid.Row="5" Text="{Binding ObjectCountLabel}" Classes="muted" FontSize="11" TextWrapping="Wrap" />
+            </Grid>
+          </TabItem>
+        </TabControl>
       </Border>
       <GridSplitter Grid.Column="1" Background="#233331" ResizeDirection="Columns" />
 

@@ -49,7 +49,14 @@ for library in /usr/lib/rowfinch/*.so; do
         exit 1
     fi
 done
-env -u DOTNET_ROOT -u DOTNET_ROOT_X64 rowfinch --version
+package_version=$(dpkg-query -W -f='${Version}' rowfinch)
+expected_version=${package_version/'~'/-}
+app_version=$(env -u DOTNET_ROOT -u DOTNET_ROOT_X64 rowfinch --version)
+if [[ "$app_version" != "Rowfinch $expected_version" ]]; then
+    printf 'Package/app version mismatch: package=%s, app=%s\n' "$package_version" "$app_version" >&2
+    exit 1
+fi
+printf '%s\n' "$app_version"
 env -u DISPLAY -u WAYLAND_DISPLAY rowfinch --help > /dev/null
 (
     cd /

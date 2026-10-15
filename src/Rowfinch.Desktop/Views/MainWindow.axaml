@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Rowfinch.Desktop"
         x:Class="Rowfinch.Desktop.Views.MainWindow"
         Title="Rowfinch — Your SQL workspace" Icon="avares://Rowfinch/Assets/rowfinch.png" Width="1380" Height="960"
         MinWidth="1050" MinHeight="780" WindowStartupLocation="CenterScreen">
@@ -11,7 +12,14 @@
             <TextBlock Text="r" Foreground="#102820" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
           <StackPanel VerticalAlignment="Center" Spacing="2">
-            <TextBlock Text="Rowfinch" FontSize="20" FontWeight="SemiBold" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Rowfinch" FontSize="20" FontWeight="SemiBold" />
+              <Border Background="#20332E" CornerRadius="4" Padding="6,2" VerticalAlignment="Center"
+                      ToolTip.Tip="{x:Static app:AppVersion.BuildDetails}">
+                <TextBlock x:Name="AppVersionText" Text="{x:Static app:AppVersion.DisplayVersion}"
+                           FontSize="11" Foreground="#ADE1CC" MaxWidth="160" TextTrimming="CharacterEllipsis" />
+              </Border>
+            </StackPanel>
             <TextBlock Text="YOUR SQL WORKSPACE" Classes="section" FontSize="9" />
           </StackPanel>
         </StackPanel>

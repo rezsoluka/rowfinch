@@ -11,6 +11,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using System.Reflection;
+using Rowfinch.Core;
 using Xunit;
 
 [assembly: AvaloniaTestApplication(typeof(Rowfinch.Tests.TestAppBuilder))]
@@ -26,6 +28,141 @@ public static class TestAppBuilder
 
 public sealed class UiTests
 {
+    [AvaloniaFact]
+    public async Task SidebarFiltersAndColumnControlsDriveSelectedColumnUpdateFromTheClickedObject()
+    {
+        var profiles = Enumerable.Range(1, 20).Select(i => new ConnectionProfile
+            { Name = $"Development {i}", Server = "example.database.windows.net", Database = $"database{i}", UserName = "reader" }).ToArray();
+        await using var workspace = new WorkspaceViewModel(new UiProfiles(profiles));
+        var window = new MainWindow(workspace);
+        window.Show();
+        var tab = workspace.SelectedTab!;
+        var view = window.ActiveQueryView!;
+        var sidebar = view.FindControl<TabControl>("SidebarTabs")!;
+        Assert.Equal(Dock.Left, sidebar.TabStripPlacement);
+        Assert.Equal(0, sidebar.SelectedIndex);
+        Assert.False(tab.ConnectionDetailsExpanded);
+        tab.ConnectionDetailsExpanded = false;
+        window.UpdateLayout();
+        Assert.Equal(20, workspace.Profiles.Count);
+        Assert.True(view.FindControl<ListBox>("ConnectionList")!.Bounds.Height > 500);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_CONNECTIONS_SCREENSHOT") is { Length: > 0 } path)
+        {
+            using var frame = window.CaptureRenderedFrame();
+            Assert.NotNull(frame);
+            frame.Save(path, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        Click(window, Assert.IsType<ListBoxItem>(view.FindControl<ListBox>("ConnectionList")!.ContainerFromIndex(0)));
+        Assert.True(tab.ConnectionDetailsExpanded);
+        Assert.NotNull(tab.SelectedProfile);
+        await tab.StartDemoAsync();
+        window.UpdateLayout();
+        Assert.Equal(1, sidebar.SelectedIndex);
+        var connectionsTab = view.FindControl<TabItem>("ConnectionsSidebarTab")!;
+        var objectsTab = view.FindControl<TabItem>("ObjectsSidebarTab")!;
+        Assert.Equal(40, connectionsTab.Bounds.Width);
+        Assert.Equal(40, objectsTab.Bounds.Width);
+        Assert.True(connectionsTab.Bounds.Height > connectionsTab.Bounds.Width);
+        Click(window, connectionsTab);
+        Assert.Equal(0, tab.SidebarTabIndex);
+        Click(window, objectsTab);
+        Assert.Equal(1, tab.SidebarTabIndex);
+        Assert.True(view.FindControl<TreeView>("ObjectTree")!.Bounds.Height > 450);
+        Click(window, view.FindControl<CheckBox>("TablesTypeFilter")!);
+        Assert.True(tab.ShowTables);
+        Assert.False(view.FindControl<RadioButton>("AllTypesFilter")!.IsChecked);
+        Assert.Equal(2, tab.Objects.Count);
+        Click(window, view.FindControl<CheckBox>("ViewsTypeFilter")!);
+        Assert.Equal(3, tab.Objects.Count);
+        view.FindControl<TextBox>("ObjectFilterInput")!.Text = "monthly";
+        Assert.Equal("View", Assert.Single(tab.Objects).Object!.Kind);
+        Click(window, view.FindControl<RadioButton>("AllTypesFilter")!);
+        Assert.True(tab.AllObjectTypes);
+        view.FindControl<TextBox>("ObjectFilterInput")!.Text = "";
+        Assert.Equal(5, tab.Objects.Count);
+        var customers = tab.Objects[0];
+        var tree = view.FindControl<TreeView>("ObjectTree")!;
+        window.UpdateLayout();
+        Assert.IsType<TreeViewItem>(tree.ContainerFromItem(customers)).IsExpanded = true;
+        await customers.LoadTask;
+        window.UpdateLayout();
+        var unselect = Assert.Single(view.GetVisualDescendants().OfType<Button>(), b => Equals(b.Content, "Unselect all") && b.DataContext == customers);
+        Click(window, unselect);
+        Assert.Empty(customers.SelectedColumns);
+        var select = Assert.Single(view.GetVisualDescendants().OfType<Button>(), b => Equals(b.Content, "Select all") && b.DataContext == customers);
+        Click(window, select);
+        Assert.Equal(3, customers.SelectedColumns.Count);
+        foreach (var column in customers.Children.Take(2))
+        {
+            var checkbox = Assert.Single(view.GetVisualDescendants().OfType<CheckBox>(), c => c.DataContext == column);
+            Click(window, checkbox);
+            Assert.False(column.IsSelected);
+        }
+        Assert.Equal("Email", Assert.Single(customers.SelectedColumns).Name);
+        tree.SelectedItem = tab.Objects[1]; // The context action must use the clicked column's owner.
+        var label = Assert.Single(view.GetVisualDescendants().OfType<TextBlock>(), t => t.Text == "Email");
+        var target = Assert.IsType<Grid>(label.Parent!.Parent);
+        target.RaiseEvent(new ContextRequestedEventArgs { RoutedEvent = Control.ContextRequestedEvent });
+        var update = Assert.Single(target.ContextMenu!.ItemsSource!.Cast<Control>().OfType<MenuItem>(), a => Equals(a.Header, "Generate UPDATE in new tab"));
+        var sourceSql = tab.Sql;
+        var sourceResult = tab.SelectedResult;
+        update.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Equal("dbo.Customers.update.sql", workspace.SelectedTab!.DocumentName);
+        Assert.Contains("SET\n    [Email] = <value_1>\nWHERE\n    [CustomerId] = <key_1>;", workspace.SelectedTab.Sql);
+        Assert.Equal(sourceSql, tab.Sql);
+        Assert.Same(sourceResult, tab.SelectedResult);
+        target.ContextMenu.Close();
+        workspace.SelectedTab.MarkSaved(workspace.SelectedTab.DocumentName);
+        workspace.SelectedTab.SidebarTabIndex = 0;
+        workspace.SelectedTab.ShowFunctions = true;
+        workspace.SelectedTab = tab;
+        Assert.Same(view, window.ActiveQueryView);
+        Assert.Equal(1, tab.SidebarTabIndex);
+        Assert.True(tab.AllObjectTypes);
+        Assert.Equal("Email", Assert.Single(customers.SelectedColumns).Name);
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task ConnectionDetailsStayWithinTheSidebarAtMinimumWindowSize()
+    {
+        await using var workspace = new WorkspaceViewModel(new UiProfiles([]));
+        var window = new MainWindow(workspace) { Width = 1050, Height = 780 };
+        window.Show();
+        window.UpdateLayout();
+        var view = window.ActiveQueryView!;
+        var details = view.FindControl<Expander>("ConnectionDetails")!;
+        Assert.True(details.IsExpanded);
+        Assert.True(view.FindControl<ListBox>("ConnectionList")!.Bounds.Height >= 60);
+        var bottom = details.TranslatePoint(new Point(0, details.Bounds.Height), view)!.Value.Y;
+        Assert.True(bottom <= view.Bounds.Height - 34, $"Connection form bottom {bottom} exceeds sidebar {view.Bounds.Height - 34}.");
+        var connect = Assert.Single(view.GetVisualDescendants().OfType<Button>(), b => Equals(b.Content, "Connect"));
+        Assert.True(connect.TranslatePoint(new Point(0, connect.Bounds.Height), view)!.Value.Y <= view.Bounds.Height - 34);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_SMALL_SCREENSHOT") is { Length: > 0 } path)
+        {
+            using var frame = window.CaptureRenderedFrame();
+            Assert.NotNull(frame);
+            frame.Save(path, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        window.Close();
+    }
+
+    private static void Click(Window window, Control control)
+    {
+        window.UpdateLayout();
+        var point = control.TranslatePoint(new Point(control.Bounds.Width / 2, control.Bounds.Height / 2), window)!.Value;
+        window.MouseDown(point, MouseButton.Left, RawInputModifiers.None);
+        window.MouseUp(point, MouseButton.Left, RawInputModifiers.None);
+        window.UpdateLayout();
+    }
+
+    private sealed class UiProfiles(IReadOnlyList<ConnectionProfile> profiles) : IProfileStore
+    {
+        public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(profiles);
+        public Task SaveAsync(IReadOnlyList<ConnectionProfile> saved, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     [AvaloniaFact]
     public async Task KeyboardShortcutsAndCloseDialogPreserveUnsavedTabWhenCancelled()
     {
@@ -159,6 +296,10 @@ public sealed class UiTests
         Assert.Equal(5, table.Columns.Count);
         Assert.Equal(4, table.Items.Count);
         Assert.True(window.Bounds.Width >= 1050);
+        var version = typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+        var versionText = window.FindControl<TextBlock>("AppVersionText")!;
+        Assert.Equal($"v{version.Split('+')[0]}", versionText.Text);
+        Assert.Equal($"Rowfinch {version}", ToolTip.GetTip(Assert.IsType<Border>(versionText.Parent)));
         workspace.NewTab();
         workspace.SelectedTab = tab;
         window.UpdateLayout();

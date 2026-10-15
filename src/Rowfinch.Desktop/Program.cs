@@ -1,5 +1,4 @@
 using Avalonia;
-using System.Reflection;
 
 namespace Rowfinch.Desktop;
 
@@ -10,7 +9,7 @@ internal static class Program
     {
         if (args.Contains("--version"))
         {
-            Console.WriteLine("Rowfinch " + typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]);
+            Console.WriteLine($"Rowfinch {AppVersion.Version}");
             return;
         }
         if (args.Contains("--help") || args.Contains("-h"))

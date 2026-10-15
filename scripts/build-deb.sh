@@ -49,7 +49,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ 
     printf 'Use a version such as 0.1.0 or 0.2.0-beta.1: %s\n' "$version" >&2; exit 2
 fi
 # Debian sorts ~beta before the corresponding final release.
-deb_version=${version/-/~}
+deb_version=${version/-/'~'}
 desktop-file-validate "$repo_root/packaging/linux/rowfinch.desktop"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/rowfinch-deb.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT

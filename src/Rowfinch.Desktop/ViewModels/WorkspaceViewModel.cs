@@ -43,7 +43,12 @@ public sealed class WorkspaceViewModel : ObservableModel, IAsyncDisposable
 
     public async Task InitializeAsync()
     {
-        try { await catalog.InitializeAsync(); }
+        try
+        {
+            await catalog.InitializeAsync();
+            if (SelectedTab is { IsConnected: false, SelectedProfile: null } tab && Profiles.Count > 0 && string.IsNullOrEmpty(tab.Server))
+                tab.ConnectionDetailsExpanded = false;
+        }
         catch (Exception error) { SelectedTab?.ReportError(error); }
     }
 

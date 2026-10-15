@@ -163,9 +163,16 @@ public partial class QueryTabView : UserControl
         else if (item.HasDefinition) await workspace.OpenDefinitionAsync(node);
     }
 
+    private void OnConnectionsPageSizeChanged(object? sender, SizeChangedEventArgs args)
+    {
+        if (ConnectionDetails is not null) ConnectionDetails.MaxHeight = Math.Max(120, args.NewSize.Height - 200);
+    }
+
     private void OnObjectContextRequested(object? sender, ContextRequestedEventArgs args)
     {
-        if (sender is not Control { DataContext: ObjectBrowserNode { Object: { } item } node } control) return;
+        if (sender is not Control { DataContext: ObjectBrowserNode clicked } control) return;
+        var node = clicked.Object is not null ? clicked : clicked.Owner;
+        if (node?.Object is not { } item) return;
         args.Handled = true;
         var menu = new ContextMenu();
         var actions = new List<Control>();
@@ -183,6 +190,8 @@ public partial class QueryTabView : UserControl
         {
             Add("Select top 100", () => workspace.PreviewRowsAsync(node));
             Add("Generate SELECT in new tab", () => workspace.GenerateSelectAsync(node));
+            Add("Generate INSERT in new tab", () => workspace.GenerateInsertAsync(node));
+            Add("Generate UPDATE in new tab", () => workspace.GenerateUpdateAsync(node));
         }
         if (item.HasDefinition) Add("Open definition in new tab", () => workspace.OpenDefinitionAsync(node));
         actions.Add(new Separator());

@@ -201,6 +201,138 @@ public sealed class ObjectBrowserTests
     private static QueryTabViewModel CreateTab(MetadataSession session) => new(new MemoryProfiles(), () => session)
         { Server = "test.database.windows.net", Database = "test", UserName = "reader" };
 
+    [Fact]
+    public async Task ObjectTypeSelectionsCombineWithTextAndAllRestoresEveryKind()
+    {
+        await using var tab = CreateTab(new MetadataSession());
+        await tab.ConnectAsync();
+        Assert.True(tab.AllObjectTypes);
+        Assert.Equal(4, tab.Objects.Count);
+        tab.ShowTables = true;
+        Assert.Equal("Table", Assert.Single(tab.Objects).Object!.Kind);
+        tab.ShowViews = true;
+        Assert.Equal(2, tab.Objects.Count);
+        tab.ObjectFilter = "  customerVIEW  ";
+        Assert.Equal("View", Assert.Single(tab.Objects).Object!.Kind);
+        tab.ShowViews = false;
+        Assert.Empty(tab.Objects);
+        tab.AllObjectTypes = true;
+        Assert.Equal("View", Assert.Single(tab.Objects).Object!.Kind);
+        tab.ObjectFilter = "";
+        tab.ShowFunctions = true;
+        Assert.Equal("Function", Assert.Single(tab.Objects).Object!.Kind);
+        tab.ShowFunctions = false;
+        Assert.True(tab.AllObjectTypes);
+        Assert.Equal(4, tab.Objects.Count);
+    }
+
+    [Fact]
+    public async Task SelectedColumnsDriveEveryGeneratorWithoutResettingOrExecuting()
+    {
+        var session = new MetadataSession
+        {
+            ColumnsOverride = [new(1, "Id", "int", false, 1, IsIdentity: true), new(2, "Name", "nvarchar(100)", false), new(3, "Email", "nvarchar(100)", true)]
+        };
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        var source = workspace.SelectedTab!;
+        source.Server = "test"; source.Database = "db"; source.UserName = "reader";
+        await source.ConnectAsync();
+        var sql = source.Sql;
+        var root = source.Objects[0];
+        root.IsExpanded = true;
+        await root.LoadTask;
+        root.UnselectAllColumnsCommand!.Execute(null);
+        var email = Assert.Single(root.Children, c => c.Label == "Email");
+        email.IsSelected = true;
+        source.ObjectFilter = "missing";
+        source.ObjectFilter = "";
+        Assert.Same(root, source.Objects[0]);
+        await source.GenerateSelectAsync(root);
+        Assert.Contains("SELECT\n    [Email]\nFROM", workspace.SelectedTab!.Sql);
+        await source.GenerateInsertAsync(root);
+        Assert.Contains("INSERT INTO [dbo].[Customers] (\n    [Email]", workspace.SelectedTab!.Sql);
+        await source.GenerateUpdateAsync(root);
+        Assert.Contains("SET\n    [Email] = <value_1>\nWHERE\n    [Id] = <key_1>;", workspace.SelectedTab!.Sql);
+        Assert.Same(email, Assert.Single(root.Children, c => c.Label == "Email"));
+        Assert.Equal("Email", Assert.Single(root.SelectedColumns).Name);
+        Assert.Equal(sql, source.Sql);
+        Assert.Equal("db", workspace.SelectedTab.Database);
+        Assert.False(workspace.SelectedTab.IsConnected);
+        Assert.True(workspace.SelectedTab.IsDirty);
+        Assert.Equal(0, session.ExecutionCalls);
+        Assert.Equal(1, session.ColumnCalls);
+        root.UnselectAllColumnsCommand.Execute(null);
+        var count = workspace.Tabs.Count;
+        await source.GenerateSelectAsync(root);
+        await source.GenerateInsertAsync(root);
+        await source.GenerateUpdateAsync(root);
+        Assert.Equal(count, workspace.Tabs.Count);
+        Assert.Contains("Select at least one", source.Messages);
+    }
+
+    [Fact]
+    public async Task ColumnRefreshPreservesChoicesAndDefaultsNewVisibleColumnsToSelected()
+    {
+        var session = new MetadataSession { ColumnsOverride = [new(1, "Name", "nvarchar(100)", false), new(2, "Email", "nvarchar(100)", true)] };
+        await using var tab = CreateTab(session);
+        await tab.ConnectAsync();
+        var root = tab.Objects[0];
+        root.IsExpanded = true;
+        await root.LoadTask;
+        root.Children[0].IsSelected = false;
+        session.ColumnsOverride = [new(1, "Name", "nvarchar(200)", false), new(2, "Email", "nvarchar(200)", true), new(3, "NewColumn", "int", true), new(4, "Hidden", "int", false, IsHidden: true)];
+        await tab.RefreshObjectAsync(root);
+        Assert.False(root.Children[0].IsSelected);
+        Assert.Equal(new[] { "Email", "NewColumn" }, root.SelectedColumns.Select(c => c.Name));
+        Assert.Equal("2 of 3 selected", root.SelectionSummary);
+        root.SelectAllColumnsCommand!.Execute(null);
+        Assert.Equal(3, root.SelectedColumns.Count);
+        Assert.False(root.Children[3].IsSelected);
+        root.UnselectAllColumnsCommand!.Execute(null);
+        Assert.Empty(root.SelectedColumns);
+    }
+
+    [Fact]
+    public async Task CancellingTemplateMetadataLoadDoesNotCreateDocumentsAfterTabSwitch()
+    {
+        var session = new MetadataSession { WaitForColumns = true };
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        var origin = workspace.SelectedTab!;
+        origin.Server = "test"; origin.Database = "db"; origin.UserName = "reader";
+        await origin.ConnectAsync();
+        var generation = origin.GenerateInsertAsync(origin.Objects[0]);
+        await session.ColumnsStarted.Task;
+        var other = workspace.NewTab();
+        origin.Cancel();
+        await generation;
+        Assert.Equal(2, workspace.Tabs.Count);
+        Assert.Same(other, workspace.SelectedTab);
+        Assert.Equal("Cancelled", origin.Status);
+        Assert.Equal(0, session.ExecutionCalls);
+        Assert.Empty(other.Sql);
+    }
+
+    [Fact]
+    public async Task ReconnectingWithFailedDiscoveryCannotUseThePreviousDatabaseObjects()
+    {
+        var session = new MetadataSession();
+        await using var tab = CreateTab(session);
+        await tab.ConnectAsync();
+        var old = tab.Objects[0];
+        old.IsExpanded = true;
+        await old.LoadTask;
+        session.LoseConnection();
+        session.FailObjectList = true;
+        tab.Database = "other";
+        await tab.ConnectAsync();
+        Assert.True(tab.IsConnected);
+        Assert.Empty(tab.Objects);
+        await tab.GenerateInsertAsync(old);
+        Assert.Contains("object list has changed", tab.Messages);
+        Assert.Equal(1, session.ColumnCalls);
+        Assert.Equal(0, session.ExecutionCalls);
+    }
+
     private sealed class MemoryProfiles : IProfileStore
     {
         public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ConnectionProfile>>([]);
@@ -215,7 +347,10 @@ public sealed class ObjectBrowserTests
         public int ExecutionCalls { get; private set; }
         public string LastSql { get; private set; } = "";
         public bool FailColumns { get; set; }
+        public bool FailObjectList { get; set; }
+        public void LoseConnection() => IsConnected = false;
         public string ColumnName { get; set; } = "Id";
+        public IReadOnlyList<DatabaseColumn>? ColumnsOverride { get; set; }
         public bool WaitForDefinition { get; init; }
         public bool WaitForColumns { get; set; }
         public TaskCompletionSource ColumnsStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -231,7 +366,8 @@ public sealed class ObjectBrowserTests
         public Task<IReadOnlyList<DatabaseObject>> GetObjectsAsync(CancellationToken cancellationToken)
         {
             ObjectCalls++;
-            return Task.FromResult<IReadOnlyList<DatabaseObject>>([new("dbo", "Customers", "Table", 1), new("dbo", "CustomerView", "View", 2), new("dbo", "GetCustomer", "Procedure", 3)]);
+            if (FailObjectList) throw new InvalidOperationException("Metadata denied");
+            return Task.FromResult<IReadOnlyList<DatabaseObject>>([new("dbo", "Customers", "Table", 1), new("dbo", "CustomerView", "View", 2), new("dbo", "GetCustomer", "Procedure", 3), new("dbo", "CustomerTotal", "Function", 4)]);
         }
         public async Task<IReadOnlyList<DatabaseColumn>> GetColumnsAsync(DatabaseObject item, CancellationToken cancellationToken)
         {
@@ -239,7 +375,7 @@ public sealed class ObjectBrowserTests
             ColumnsStarted.TrySetResult();
             if (WaitForColumns) await Task.Delay(Timeout.Infinite, cancellationToken);
             if (FailColumns) throw new InvalidOperationException("Metadata denied");
-            return [new(1, ColumnName, "int", false, 1)];
+            return ColumnsOverride ?? [new(1, ColumnName, "int", false, 1)];
         }
         public async Task<string> GetDefinitionAsync(DatabaseObject item, CancellationToken cancellationToken)
         {

@@ -137,7 +137,7 @@ public sealed class SqlQuerySession : IQuerySession, IObjectMetadataSession
         await using var command = CreateMetadataCommand(item, """
             SELECT c.column_id, c.name, t.name, c.max_length, c.precision, c.scale,
                    c.is_nullable, COALESCE(pk.key_ordinal, 0), c.is_identity, c.is_computed,
-                   c.is_hidden, t.is_user_defined, ts.name
+                   c.is_hidden, t.is_user_defined, ts.name, c.generated_always_type, c.system_type_id
             FROM sys.objects AS o
             JOIN sys.schemas AS s ON s.schema_id = o.schema_id
             JOIN sys.columns AS c ON c.object_id = o.object_id
@@ -160,7 +160,8 @@ public sealed class SqlQuerySession : IQuerySession, IObjectMetadataSession
                 ? $"{ObjectSql.Quote(reader.GetString(12))}.{ObjectSql.Quote(reader.GetString(2))}"
                 : ObjectSql.FormatType(reader.GetString(2), reader.GetInt16(3), reader.GetByte(4), reader.GetByte(5));
             columns.Add(new(reader.GetInt32(0), reader.GetString(1), type, reader.GetBoolean(6),
-                reader.GetInt32(7), reader.GetBoolean(8), reader.GetBoolean(9), reader.GetBoolean(10)));
+                reader.GetInt32(7), reader.GetBoolean(8), reader.GetBoolean(9), reader.GetBoolean(10),
+                reader.GetByte(13) != 0, reader.GetByte(14) == 189));
         }
         if (columns.Count == 0) throw new InvalidOperationException("Columns are unavailable. Refresh the object list; the object may have changed or metadata permission may be missing.");
         return columns;

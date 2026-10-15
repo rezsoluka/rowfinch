@@ -27,6 +27,9 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     private string password = "";
     private int authenticationIndex;
     private string objectFilter = "";
+    private int sidebarTabIndex;
+    private bool connectionDetailsExpanded = true;
+    private bool showTables, showViews, showProcedures, showFunctions;
     private string sql = """
         -- Welcome to Rowfinch.
         -- Connect to your database, or choose Try demo to explore the workspace.
@@ -152,6 +155,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
             if (!CanEditConnection || !Set(ref selectedProfile, value)) return;
             RefreshCredentialActions();
             if (value is null) return;
+            ConnectionDetailsExpanded = true;
             ProfileName = value.Name; Server = value.Server; Database = value.Database;
             UserName = value.UserName; AuthenticationIndex = (int)value.Authentication; Password = "";
             RememberPassword = value.RememberPassword && IsSqlAuthentication;
@@ -174,6 +178,31 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public int RowLimit { get => rowLimit; set => Set(ref rowLimit, Math.Clamp(value, 1, 100_000)); }
     public int TimeoutSeconds { get => timeoutSeconds; set => Set(ref timeoutSeconds, Math.Clamp(value, 1, 3600)); }
     public string ObjectFilter { get => objectFilter; set { Set(ref objectFilter, value); FilterObjects(); } }
+    public int SidebarTabIndex { get => sidebarTabIndex; set => Set(ref sidebarTabIndex, Math.Clamp(value, 0, 1)); }
+    public bool ConnectionDetailsExpanded { get => connectionDetailsExpanded; set => Set(ref connectionDetailsExpanded, value); }
+    public bool ShowTables { get => showTables; set => SetObjectType(ref showTables, value, nameof(ShowTables)); }
+    public bool ShowViews { get => showViews; set => SetObjectType(ref showViews, value, nameof(ShowViews)); }
+    public bool ShowProcedures { get => showProcedures; set => SetObjectType(ref showProcedures, value, nameof(ShowProcedures)); }
+    public bool ShowFunctions { get => showFunctions; set => SetObjectType(ref showFunctions, value, nameof(ShowFunctions)); }
+    public bool AllObjectTypes
+    {
+        get => !showTables && !showViews && !showProcedures && !showFunctions;
+        set
+        {
+            if (!value || AllObjectTypes) return;
+            showTables = showViews = showProcedures = showFunctions = false;
+            Notify(nameof(ShowTables)); Notify(nameof(ShowViews)); Notify(nameof(ShowProcedures)); Notify(nameof(ShowFunctions));
+            Notify(nameof(AllObjectTypes)); FilterObjects();
+        }
+    }
+    public string ObjectCountLabel => IsConnected ? $"{Objects.Count:N0} of {allObjects.Count:N0} objects" : "Connect to browse database objects.";
+
+    private void SetObjectType(ref bool field, bool value, string property)
+    {
+        if (!Set(ref field, value, property)) return;
+        Notify(nameof(AllObjectTypes)); FilterObjects();
+    }
+
     public QueryResultSet? SelectedResult
     {
         get => selectedResult;
@@ -206,6 +235,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
             }
         }
         if (session is not null) { await session.DisposeAsync(); session = null; }
+        allObjects.Clear(); Objects.Clear(); Notify(nameof(ObjectCountLabel));
         var candidate = sessionFactory();
         try { await candidate.OpenAsync(profile, connectionPassword, token); }
         catch { await candidate.DisposeAsync(); throw; }
@@ -245,6 +275,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         }
         else if (profile.Authentication == AuthenticationKind.SqlPassword)
             KeyringMessage = "Connected with a session-only password.";
+        ConnectionDetailsExpanded = false; SidebarTabIndex = 1;
         try { await LoadObjectsAsync(token); }
         catch (Exception error) when (error is not OperationCanceledException)
         { AppendMessage($"Connected, but object discovery failed: {error.Message}"); }
@@ -262,6 +293,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         SetResults(execution.Results);
         AppendMessage("Demo mode: results are sample data. SQL text is not executed.");
         Status = "Demo ready";
+        ConnectionDetailsExpanded = false; SidebarTabIndex = 1;
     }, "Opening demo…");
 
     public Task DisconnectAsync() => RunOperationAsync(async _ =>
@@ -270,6 +302,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         session = null;
         IsDemo = false;
         allObjects.Clear(); Objects.Clear();
+        ConnectionDetailsExpanded = true; SidebarTabIndex = 0; Notify(nameof(ObjectCountLabel));
         ConnectionLabel = "Not connected";
         transactionCount = 0;
         Status = "Disconnected";
@@ -324,6 +357,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public void NewProfile()
     {
         if (!CanEditConnection) return;
+        SidebarTabIndex = 0; ConnectionDetailsExpanded = true;
         selectedProfile = null; Notify(nameof(SelectedProfile));
         draftProfileId = Guid.NewGuid(); RememberPassword = false; RefreshCredentialActions();
         ProfileName = "New connection"; Server = ""; Database = ""; UserName = ""; Password = ""; AuthenticationIndex = 0;
@@ -464,16 +498,31 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         catch (Exception error) { ReportError(error); }
     }
 
-    public Task GenerateSelectAsync(ObjectBrowserNode node) => RunOperationAsync(async token =>
+    public Task GenerateSelectAsync(ObjectBrowserNode node) => GenerateScriptAsync(node, ObjectScriptKind.Select);
+    public Task GenerateInsertAsync(ObjectBrowserNode node) => GenerateScriptAsync(node, ObjectScriptKind.Insert);
+    public Task GenerateUpdateAsync(ObjectBrowserNode node) => GenerateScriptAsync(node, ObjectScriptKind.Update);
+
+    private Task GenerateScriptAsync(ObjectBrowserNode node, ObjectScriptKind kind) => RunOperationAsync(async token =>
     {
         var item = RequireObject(node);
-        if (!item.HasColumns) throw new ArgumentException("Generate SELECT is available for tables and views.");
-        var columns = node.Columns ?? await Metadata.GetColumnsAsync(item, token);
+        if (!item.HasColumns) throw new ArgumentException("SQL templates are available for tables and views.");
+        if (node.Columns is null)
+        {
+            var loaded = await Metadata.GetColumnsAsync(item, token);
+            token.ThrowIfCancellationRequested();
+            node.SetColumns(loaded);
+        }
+        var selected = node.SelectedColumns;
+        var text = kind switch
+        {
+            ObjectScriptKind.Select => ObjectSql.Select(item, selected),
+            ObjectScriptKind.Insert => ObjectSql.Insert(item, selected),
+            ObjectScriptKind.Update => ObjectSql.Update(item, node.Columns!, selected),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind))
+        };
         token.ThrowIfCancellationRequested();
-        node.SetColumns(columns);
-        var text = ObjectSql.Select(item, columns);
-        DocumentRequested?.Invoke(this, text, $"{item.DisplayName}.select.sql");
-    }, "Generating SELECT…", "SELECT opened in a new tab — connect to run");
+        DocumentRequested?.Invoke(this, text, $"{item.DisplayName}.{kind.ToString().ToLowerInvariant()}.sql");
+    }, $"Generating {kind.ToString().ToUpperInvariant()}…", "SQL opened in a new tab — connect to run");
 
     public Task OpenDefinitionAsync(ObjectBrowserNode node) => RunOperationAsync(async token =>
     {
@@ -494,7 +543,13 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     private void FilterObjects()
     {
         Objects.Clear();
-        foreach (var item in allObjects.Where(o => o.Object!.DisplayName.Contains(ObjectFilter, StringComparison.OrdinalIgnoreCase))) Objects.Add(item);
+        var filter = ObjectFilter.Trim();
+        foreach (var item in allObjects.Where(o => o.Object!.DisplayName.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
+            (AllObjectTypes || (o.Object.Kind switch
+            {
+                "Table" => ShowTables, "View" => ShowViews, "Procedure" => ShowProcedures, "Function" => ShowFunctions, _ => false
+            })))) Objects.Add(item);
+        Notify(nameof(ObjectCountLabel));
     }
     private void SetResults(IReadOnlyList<QueryResultSet> results)
     {
@@ -511,7 +566,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     }
     private void RefreshState()
     {
-        Notify(nameof(IsConnected)); Notify(nameof(CanExecute)); Notify(nameof(CanEditConnection));
+        Notify(nameof(IsConnected)); Notify(nameof(CanExecute)); Notify(nameof(CanEditConnection)); Notify(nameof(ObjectCountLabel));
         Notify(nameof(TransactionLabel)); Notify(nameof(TransactionCount)); Notify(nameof(SessionLabel));
         ConnectCommand.Refresh(); DemoCommand.Refresh(); DisconnectCommand.Refresh(); SaveProfileCommand.Refresh();
         NewProfileCommand.Refresh(); RefreshObjectsCommand.Refresh(); CancelCommand.Refresh(); CommitCommand.Refresh(); RollbackCommand.Refresh();
