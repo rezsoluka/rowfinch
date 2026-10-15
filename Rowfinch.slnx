@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Rowfinch.Core/Rowfinch.Core.csproj" />
+    <Project Path="src/Rowfinch.Infrastructure/Rowfinch.Infrastructure.csproj" />
+    <Project Path="src/Rowfinch.Desktop/Rowfinch.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Rowfinch.Tests/Rowfinch.Tests.csproj" />
+  </Folder>
+</Solution>

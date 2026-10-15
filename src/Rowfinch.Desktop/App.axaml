@@ -1,0 +1,37 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Rowfinch.Desktop.App" RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="Inter" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Background" Value="#101819" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="12,8" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#79CFB0" />
+      <Setter Property="Foreground" Value="#102820" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#9BAFAE" />
+    </Style>
+    <Style Selector="TextBlock.section">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="#9BAFAE" />
+      <Setter Property="LetterSpacing" Value="1.5" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="ToolTip">
+      <Setter Property="MaxWidth" Value="420" />
+    </Style>
+  </Application.Styles>
+</Application>

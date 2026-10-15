@@ -1,0 +1,8 @@
+**
+!artifacts/
+!artifacts/packages/
+!artifacts/packages/*.deb
+!packaging/
+!packaging/linux/
+!packaging/linux/Dockerfile
+!packaging/linux/test-installed.sh

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Rowfinch">
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#79cfb0"/>
+  <path d="M66 72h43v24c12-19 29-28 51-28h18v44h-19c-30 0-48 18-48 48v42H66Z" fill="#102820"/>
+  <path d="m178 77 30 19-30 16Z" fill="#e2b66f"/>
+  <circle cx="155" cy="87" r="5" fill="#79cfb0"/>
+</svg>

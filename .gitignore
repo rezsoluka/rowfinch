@@ -1,0 +1,26 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+TestResults/
+*.user
+*.suo
+.DS_Store
+artifacts/
+*.log
+
+# Local connection data, credentials, and signing material.
+.env
+.env.*
+!.env.example
+connections.json
+secrets.json
+*.pfx
+*.p12
+*.pem
+*.key
+appsettings.*.local.json
+
+# Python helper caches.
+__pycache__/
+*.py[cod]

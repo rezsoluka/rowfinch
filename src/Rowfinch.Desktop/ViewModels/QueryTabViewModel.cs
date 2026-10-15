@@ -1,0 +1,531 @@
+using System.Collections.ObjectModel;
+using Rowfinch.Core;
+using Rowfinch.Infrastructure;
+
+namespace Rowfinch.Desktop.ViewModels;
+
+public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
+{
+    private readonly ConnectionCatalog catalog;
+    private readonly Func<IQuerySession> sessionFactory;
+    private readonly ICredentialStore credentialStore;
+    private Guid draftProfileId = Guid.NewGuid();
+    private bool rememberPassword;
+    private string keyringMessage = "Passwords are session-only unless you choose to remember them.";
+    private IQuerySession? session;
+    private CancellationTokenSource? operation;
+    private TaskCompletionSource? idleCompletion;
+    private bool disposed;
+    private bool isClosing;
+    private readonly List<ObjectBrowserNode> allObjects = [];
+    private ConnectionProfile? selectedProfile;
+    private QueryResultSet? selectedResult;
+    private string profileName = "My Azure database";
+    private string server = "";
+    private string database = "";
+    private string userName = "";
+    private string password = "";
+    private int authenticationIndex;
+    private string objectFilter = "";
+    private string sql = """
+        -- Welcome to Rowfinch.
+        -- Connect to your database, or choose Try demo to explore the workspace.
+        -- Ctrl+Enter runs the selection or the entire script. F5 runs it too.
+
+        SELECT TOP (100)
+            s.name AS [Schema],
+            t.name AS [Table],
+            t.create_date AS [Created]
+        FROM sys.tables AS t
+        JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+        ORDER BY s.name, t.name;
+        """;
+    private string status = "Ready to connect";
+    private string messages = "Connect to an Azure SQL database to begin.\nRemembered passwords are stored only in your desktop keyring.";
+    private string connectionLabel = "Not connected";
+    private string documentName = "Query 1.sql";
+    private bool isBusy;
+    private bool isDemo;
+    private bool isDirty;
+    private int? transactionCount = 0;
+    private int rowLimit = 1000;
+    private int timeoutSeconds = 60;
+    private int outputTabIndex;
+
+    public QueryTabViewModel(IProfileStore? profileStore = null, Func<IQuerySession>? sessionFactory = null, ConnectionCatalog? catalog = null, ICredentialStore? credentialStore = null)
+    {
+        this.catalog = catalog ?? new ConnectionCatalog(profileStore ?? new JsonProfileStore());
+        this.sessionFactory = sessionFactory ?? (() => new SqlQuerySession());
+        this.credentialStore = credentialStore ?? new LibSecretCredentialStore();
+        this.catalog.PasswordForgotten += OnPasswordForgotten;
+        ConnectCommand = new AsyncCommand(_ => ConnectAsync(), () => CanEditConnection);
+        DemoCommand = new AsyncCommand(_ => StartDemoAsync(), () => CanEditConnection);
+        DisconnectCommand = new AsyncCommand(_ => DisconnectAsync(), () => CanExecute);
+        SaveProfileCommand = new AsyncCommand(_ => SaveProfileAsync(), () => !IsBusy && !IsClosing);
+        ForgetPasswordCommand = new AsyncCommand(_ => ForgetPasswordAsync(), () => CanForgetPassword);
+        NewProfileCommand = new ActionCommand(_ => NewProfile(), () => CanEditConnection);
+        RefreshObjectsCommand = new AsyncCommand(_ => RefreshObjectsAsync(), () => CanExecute);
+        CancelCommand = new ActionCommand(_ => Cancel(), () => IsBusy);
+        CommitCommand = new AsyncCommand(_ => ExecuteAsync("COMMIT TRANSACTION;"), () => CanExecute && !IsDemo && transactionCount > 0);
+        RollbackCommand = new AsyncCommand(_ => ExecuteAsync("ROLLBACK TRANSACTION;"), () => CanExecute && !IsDemo && transactionCount != 0);
+    }
+
+    public ObservableCollection<ConnectionProfile> Profiles => catalog.Profiles;
+    public ObservableCollection<ObjectBrowserNode> Objects { get; } = [];
+    public ObservableCollection<QueryResultSet> Results { get; } = [];
+    public string[] AuthenticationOptions { get; } = ["SQL user and password", "Microsoft Entra — browser sign-in"];
+    public AsyncCommand ConnectCommand { get; }
+    public AsyncCommand DemoCommand { get; }
+    public AsyncCommand DisconnectCommand { get; }
+    public AsyncCommand SaveProfileCommand { get; }
+    public AsyncCommand ForgetPasswordCommand { get; }
+    public AsyncCommand RefreshObjectsCommand { get; }
+    public AsyncCommand CommitCommand { get; }
+    public AsyncCommand RollbackCommand { get; }
+    public ActionCommand NewProfileCommand { get; }
+    public ActionCommand CancelCommand { get; }
+    public bool IsConnected => session?.IsConnected == true;
+    public bool CanExecute => IsConnected && !IsBusy && !IsClosing;
+    public bool CanEditConnection => !IsBusy && !IsConnected && !IsClosing;
+    public bool IsClosing
+    {
+        get => isClosing;
+        internal set { if (Set(ref isClosing, value)) RefreshState(); }
+    }
+    public int OutputTabIndex { get => outputTabIndex; set => Set(ref outputTabIndex, value); }
+    public string SessionLabel => IsBusy ? "Working…" : IsDemo ? "Demo" : IsConnected ? Database : "Disconnected";
+    public bool RequiresCloseConfirmation => IsDirty || IsBusy || IsConnected && TransactionCount != 0;
+    public IReadOnlyList<string> CloseConcerns
+    {
+        get
+        {
+            var concerns = new List<string>();
+            if (IsDirty) concerns.Add("This tab contains unsaved SQL.");
+            if (IsBusy) concerns.Add("Its running operation will be cancelled.");
+            if (IsConnected && (IsBusy || TransactionCount != 0))
+                concerns.Add("Its open or unverified transaction will be rolled back when the session closes.");
+            return concerns;
+        }
+    }
+    public bool IsSqlAuthentication => AuthenticationIndex == 0;
+    public bool CanForgetPassword => !IsBusy && !IsClosing && selectedProfile is not null;
+    public string PasswordPlaceholder => RememberPassword ? "Password, or leave blank to use keyring" : "Password (session only)";
+    public string KeyringMessage { get => keyringMessage; private set => Set(ref keyringMessage, value); }
+    public bool RememberPassword
+    {
+        get => rememberPassword;
+        set
+        {
+            if (!Set(ref rememberPassword, value)) return;
+            Notify(nameof(PasswordPlaceholder));
+            KeyringMessage = value
+                ? "After a successful connection, save this profile and its password in your desktop keyring."
+                : "Use a session-only password. Forget saved password removes an existing keyring entry.";
+        }
+    }
+    public bool IsDemo { get => isDemo; private set => Set(ref isDemo, value); }
+    public bool IsBusy
+    {
+        get => isBusy;
+        private set { Set(ref isBusy, value); RefreshState(); }
+    }
+    public string ProfileName { get => profileName; set => Set(ref profileName, value); }
+    public string Server { get => server; set => Set(ref server, value); }
+    public string Database { get => database; set => Set(ref database, value); }
+    public string UserName { get => userName; set => Set(ref userName, value); }
+    public string Password { get => password; set => Set(ref password, value); }
+    public int AuthenticationIndex
+    {
+        get => authenticationIndex;
+        set
+        {
+            if (!Set(ref authenticationIndex, value)) return;
+            if (value != 0) { RememberPassword = false; Password = ""; }
+            Notify(nameof(IsSqlAuthentication));
+        }
+    }
+    public ConnectionProfile? SelectedProfile
+    {
+        get => selectedProfile;
+        set
+        {
+            if (!CanEditConnection || !Set(ref selectedProfile, value)) return;
+            RefreshCredentialActions();
+            if (value is null) return;
+            ProfileName = value.Name; Server = value.Server; Database = value.Database;
+            UserName = value.UserName; AuthenticationIndex = (int)value.Authentication; Password = "";
+            RememberPassword = value.RememberPassword && IsSqlAuthentication;
+            KeyringMessage = RememberPassword ? "Leave the password blank to request it from your desktop keyring when connecting." : "Passwords are session-only unless you choose to remember them.";
+        }
+    }
+    public string Sql
+    {
+        get => sql;
+        set { if (Set(ref sql, value)) { IsDirty = true; } }
+    }
+    public string DocumentName { get => documentName; private set { Set(ref documentName, value); Notify(nameof(DocumentLabel)); } }
+    public string DocumentLabel => DocumentName + (IsDirty ? " •" : "");
+    public bool IsDirty { get => isDirty; private set { Set(ref isDirty, value); Notify(nameof(DocumentLabel)); } }
+    public string Status { get => status; private set => Set(ref status, value); }
+    public string Messages { get => messages; private set => Set(ref messages, value); }
+    public string ConnectionLabel { get => connectionLabel; private set => Set(ref connectionLabel, value); }
+    public string TransactionLabel => transactionCount switch { null => "Transaction state unknown", 0 => "No open transaction", _ => $"Open transactions: {transactionCount}" };
+    public int? TransactionCount => transactionCount;
+    public int RowLimit { get => rowLimit; set => Set(ref rowLimit, Math.Clamp(value, 1, 100_000)); }
+    public int TimeoutSeconds { get => timeoutSeconds; set => Set(ref timeoutSeconds, Math.Clamp(value, 1, 3600)); }
+    public string ObjectFilter { get => objectFilter; set { Set(ref objectFilter, value); FilterObjects(); } }
+    public QueryResultSet? SelectedResult
+    {
+        get => selectedResult;
+        set { Set(ref selectedResult, value); Notify(nameof(ResultSummary)); }
+    }
+    public string ResultSummary => SelectedResult is { } result
+        ? $"{result.Rows.Count:N0} rows · {result.Columns.Count} columns" + (result.IsTruncated ? " · display limited" : "")
+        : "Results appear here after you run a query";
+
+    public Task ConnectAsync() => RunOperationAsync(async token =>
+    {
+        if (IsConnected) return;
+        var profile = CurrentProfile();
+        profile.Validate();
+        var credentialVersion = catalog.GetCredentialVersion(profile.Id);
+        string? connectionPassword = Password;
+        if (profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword && string.IsNullOrEmpty(connectionPassword))
+        {
+            try { connectionPassword = await credentialStore.GetAsync(CredentialIdentity.FromProfile(profile), token); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                KeyringMessage = SafeKeyringMessage(error);
+                throw new InvalidOperationException(KeyringMessage + " Enter your password to connect without retrieving it.");
+            }
+            if (string.IsNullOrEmpty(connectionPassword))
+            {
+                KeyringMessage = "No saved password matches these connection settings. Enter your password to connect.";
+                throw new InvalidOperationException(KeyringMessage);
+            }
+        }
+        if (session is not null) { await session.DisposeAsync(); session = null; }
+        var candidate = sessionFactory();
+        try { await candidate.OpenAsync(profile, connectionPassword, token); }
+        catch { await candidate.DisposeAsync(); throw; }
+        session = candidate;
+        IsDemo = false;
+        transactionCount = 0;
+        Password = "";
+        ConnectionLabel = $"{profile.Database} · {profile.Server}";
+        AppendMessage($"Connected to {profile.Database}. Encryption and certificate validation are enabled.");
+        Status = "Connected";
+        if (profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword)
+        {
+            try
+            {
+                await catalog.WithCredentialLockAsync(async () =>
+                {
+                    if (credentialVersion != catalog.GetCredentialVersion(profile.Id))
+                    {
+                        RememberPassword = false;
+                        KeyringMessage = "Password was not saved because this profile was forgotten in another tab.";
+                        return;
+                    }
+                    await SaveProfileSnapshotAsync(profile, token);
+                    await credentialStore.StoreAsync(CredentialIdentity.FromProfile(profile), $"Rowfinch — {profile.Name}", connectionPassword!, token);
+                    KeyringMessage = "Password saved in your desktop keyring.";
+                    AppendMessage(KeyringMessage);
+                }, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            { KeyringMessage = "Password saving was cancelled; storage was not confirmed. The database connection is open."; throw; }
+            catch (Exception error)
+            {
+                KeyringMessage = "Connected, but password storage could not be confirmed. " + SafeKeyringMessage(error);
+                AppendMessage(KeyringMessage);
+                Status = "Connected · password storage failed";
+            }
+        }
+        else if (profile.Authentication == AuthenticationKind.SqlPassword)
+            KeyringMessage = "Connected with a session-only password.";
+        try { await LoadObjectsAsync(token); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        { AppendMessage($"Connected, but object discovery failed: {error.Message}"); }
+    }, "Connecting…");
+
+    public Task StartDemoAsync() => RunOperationAsync(async token =>
+    {
+        if (IsConnected) return;
+        session = new DemoQuerySession();
+        IsDemo = true;
+        ConnectionLabel = "Demo workspace · no database connection";
+        transactionCount = 0;
+        await LoadObjectsAsync(token);
+        var execution = await session.ExecuteAsync(Sql, RowLimit, TimeoutSeconds, null, token);
+        SetResults(execution.Results);
+        AppendMessage("Demo mode: results are sample data. SQL text is not executed.");
+        Status = "Demo ready";
+    }, "Opening demo…");
+
+    public Task DisconnectAsync() => RunOperationAsync(async _ =>
+    {
+        if (session is not null) await session.DisposeAsync();
+        session = null;
+        IsDemo = false;
+        allObjects.Clear(); Objects.Clear();
+        ConnectionLabel = "Not connected";
+        transactionCount = 0;
+        Status = "Disconnected";
+        AppendMessage("Disconnected. Any uncommitted transaction in that session was rolled back.");
+    }, "Disconnecting…");
+
+    public Task ExecuteAsync(string? selection = null) => RunOperationAsync(async token =>
+    {
+        if (session is null || !session.IsConnected) throw new InvalidOperationException("Connect to a database first, or choose Try demo.");
+        var query = string.IsNullOrWhiteSpace(selection) ? Sql : selection;
+        if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Enter SQL to execute.");
+        // Invalid SQLCMD directives and GO counts must fail before any SQL is sent.
+        SqlBatchParser.Split(query);
+        Results.Clear(); SelectedResult = null;
+        Messages = "";
+        // Progress<T> captures Avalonia's UI synchronization context.
+        var progress = new Progress<string>(AppendMessage);
+        try
+        {
+            var execution = await session.ExecuteAsync(query, RowLimit, TimeoutSeconds, progress, token);
+            SetResults(execution.Results);
+            transactionCount = execution.TransactionCount;
+            Status = $"Completed in {execution.Elapsed.TotalSeconds:0.00}s";
+            AppendMessage(Status + (IsDemo ? " (demo data)." : "."));
+        }
+        finally
+        {
+            // Cancellation/errors can leave a transaction open; never infer a rollback.
+            transactionCount = null;
+            if (session.IsConnected)
+            {
+                using var stateTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try { transactionCount = await session.GetTransactionCountAsync(stateTimeout.Token); }
+                catch (Exception error) { AppendMessage($"Could not refresh transaction state: {error.Message}"); }
+            }
+            else ConnectionLabel = "Connection lost · reconnect to continue";
+        }
+    }, "Running query…");
+
+    public Task RefreshObjectsAsync() => RunOperationAsync(LoadObjectsAsync, "Refreshing objects…", "Objects refreshed");
+
+    public Task SaveProfileAsync() => RunOperationAsync(async token =>
+    {
+        var profile = CurrentProfile();
+        profile.Validate();
+        await SaveProfileSnapshotAsync(profile, token);
+        Status = "Connection saved";
+        AppendMessage("Connection settings saved. Passwords and access tokens are never included in the profile file.");
+        if (profile.RememberPassword) KeyringMessage = "Preference saved. A password is stored only after a successful connection.";
+    }, "Saving connection…");
+
+    public void NewProfile()
+    {
+        if (!CanEditConnection) return;
+        selectedProfile = null; Notify(nameof(SelectedProfile));
+        draftProfileId = Guid.NewGuid(); RememberPassword = false; RefreshCredentialActions();
+        ProfileName = "New connection"; Server = ""; Database = ""; UserName = ""; Password = ""; AuthenticationIndex = 0;
+    }
+
+    public void SetDocument(string text, string name, bool isSaved = true)
+    { Sql = text; DocumentName = name; IsDirty = !isSaved; }
+    public void MarkSaved(string name) { DocumentName = name; IsDirty = false; }
+    public void Cancel()
+    {
+        if (operation is not { } current) return;
+        // Cancellation may complete the operation synchronously; its final status wins.
+        Status = "Cancelling…";
+        current.Cancel();
+    }
+    public void ReportError(Exception error) { Status = "Action failed"; AppendMessage(error.Message); OutputTabIndex = 1; }
+
+    public void CopyConnectionSettingsFrom(QueryTabViewModel source)
+    {
+        if (!CanEditConnection) return;
+        selectedProfile = source.selectedProfile;
+        Notify(nameof(SelectedProfile));
+        ProfileName = source.ProfileName; Server = source.Server; Database = source.Database;
+        UserName = source.UserName; AuthenticationIndex = source.AuthenticationIndex;
+        Password = "";
+        RememberPassword = source.selectedProfile?.RememberPassword == true && source.RememberPassword && IsSqlAuthentication;
+        RefreshCredentialActions();
+    }
+
+    public Task ForgetPasswordAsync() => RunOperationAsync(token => catalog.WithCredentialLockAsync(async () =>
+    {
+        if (selectedProfile is not { } profile) throw new InvalidOperationException("Select a saved connection profile first.");
+        try { await credentialStore.DeleteAsync(profile.Id, token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            KeyringMessage = "Password removal was not confirmed. " + SafeKeyringMessage(error);
+            throw new InvalidOperationException(KeyringMessage);
+        }
+        catalog.NotifyPasswordForgotten(profile.Id);
+        try { await SaveProfileSnapshotAsync(profile with { RememberPassword = false }, token); }
+        catch (Exception)
+        { AppendMessage("The saved password was removed, but its profile preference could not be updated on disk."); }
+        KeyringMessage = "Saved password removed from the desktop keyring. Existing database sessions remain connected.";
+        AppendMessage(KeyringMessage);
+        Status = "Password forgotten";
+    }, token), "Removing saved password…");
+
+    private async Task SaveProfileSnapshotAsync(ConnectionProfile profile, CancellationToken token)
+    {
+        await catalog.SaveAsync(profile, token);
+        selectedProfile = profile;
+        Notify(nameof(SelectedProfile));
+        RefreshCredentialActions();
+    }
+
+    private void OnPasswordForgotten(Guid profileId)
+    {
+        if (selectedProfile?.Id != profileId) return;
+        RememberPassword = false; Password = "";
+        KeyringMessage = "The saved password for this profile was removed from the keyring.";
+    }
+
+    private static string SafeKeyringMessage(Exception error) => error is CredentialStoreException keyring
+        ? CredentialStoreException.MessageFor(keyring.Failure)
+        : CredentialStoreException.MessageFor(CredentialStoreFailure.Failed);
+
+    private void RefreshCredentialActions()
+    { Notify(nameof(CanForgetPassword)); ForgetPasswordCommand.Refresh(); }
+
+    public async Task RunOperationAsync(Func<CancellationToken, Task> action, string busyStatus, string? successStatus = null)
+    {
+        if (IsBusy || IsClosing || disposed) return;
+        using var cancellation = new CancellationTokenSource();
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        idleCompletion = completion;
+        operation = cancellation;
+        IsBusy = true;
+        Status = busyStatus;
+        try
+        {
+            await action(cancellation.Token);
+            if (successStatus is not null) Status = successStatus;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        { Status = "Cancelled"; AppendMessage("Operation cancelled. Check transaction state before continuing."); OutputTabIndex = 1; }
+        catch (Exception error)
+        {
+            if (cancellation.IsCancellationRequested) { Status = "Cancelled"; AppendMessage("Operation cancelled."); OutputTabIndex = 1; }
+            else ReportError(error);
+        }
+        finally
+        {
+            operation = null; IsBusy = false;
+            idleCompletion = null; completion.TrySetResult();
+        }
+    }
+
+    private ConnectionProfile CurrentProfile() => new()
+    {
+        Id = selectedProfile?.Id ?? draftProfileId, Name = string.IsNullOrWhiteSpace(ProfileName) ? Database.Trim() : ProfileName.Trim(),
+        Server = Server.Trim(), Database = Database.Trim(), UserName = UserName.Trim(), Authentication = (AuthenticationKind)AuthenticationIndex,
+        RememberPassword = IsSqlAuthentication && RememberPassword
+    };
+
+    public event Action<QueryTabViewModel, string, string>? DocumentRequested;
+
+    private DatabaseObject RequireObject(ObjectBrowserNode node)
+    {
+        if (!allObjects.Contains(node) || node.Object is not { } item)
+            throw new InvalidOperationException("This object list has changed. Choose the object again.");
+        return item;
+    }
+
+    private IObjectMetadataSession Metadata => session as IObjectMetadataSession
+        ?? throw new InvalidOperationException("Object metadata is unavailable for this session.");
+
+    private async Task<IReadOnlyList<DatabaseColumn>?> LoadColumnsAsync(ObjectBrowserNode node)
+    {
+        IReadOnlyList<DatabaseColumn>? columns = null;
+        await RunOperationAsync(async token =>
+        {
+            var item = RequireObject(node);
+            var loaded = await Metadata.GetColumnsAsync(item, token);
+            token.ThrowIfCancellationRequested();
+            columns = loaded;
+        }, "Loading columns…", "Columns loaded");
+        return columns;
+    }
+
+    public Task RefreshObjectAsync(ObjectBrowserNode node) => CanExecute
+        ? node.LoadColumnsAsync(refresh: true) : Task.CompletedTask;
+
+    public async Task PreviewRowsAsync(ObjectBrowserNode node)
+    {
+        if (!CanExecute) return;
+        try { await ExecuteAsync(ObjectSql.Preview(RequireObject(node))); }
+        catch (Exception error) { ReportError(error); }
+    }
+
+    public Task GenerateSelectAsync(ObjectBrowserNode node) => RunOperationAsync(async token =>
+    {
+        var item = RequireObject(node);
+        if (!item.HasColumns) throw new ArgumentException("Generate SELECT is available for tables and views.");
+        var columns = node.Columns ?? await Metadata.GetColumnsAsync(item, token);
+        token.ThrowIfCancellationRequested();
+        node.SetColumns(columns);
+        var text = ObjectSql.Select(item, columns);
+        DocumentRequested?.Invoke(this, text, $"{item.DisplayName}.select.sql");
+    }, "Generating SELECT…", "SELECT opened in a new tab — connect to run");
+
+    public Task OpenDefinitionAsync(ObjectBrowserNode node) => RunOperationAsync(async token =>
+    {
+        var item = RequireObject(node);
+        if (!item.HasDefinition) throw new ArgumentException("This object has no SQL module definition.");
+        var definition = await Metadata.GetDefinitionAsync(item, token);
+        token.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(definition)) throw new InvalidOperationException("Definition unavailable. Check VIEW DEFINITION permission.");
+        DocumentRequested?.Invoke(this, definition, $"{item.DisplayName}.sql");
+    }, "Loading definition…", "Definition opened in a new tab — connect to run");
+
+    private async Task LoadObjectsAsync(CancellationToken token)
+    {
+        if (session is null) return;
+        var objects = await session.GetObjectsAsync(token);
+        allObjects.Clear(); allObjects.AddRange(objects.Select(item => new ObjectBrowserNode(item, LoadColumnsAsync))); FilterObjects();
+    }
+    private void FilterObjects()
+    {
+        Objects.Clear();
+        foreach (var item in allObjects.Where(o => o.Object!.DisplayName.Contains(ObjectFilter, StringComparison.OrdinalIgnoreCase))) Objects.Add(item);
+    }
+    private void SetResults(IReadOnlyList<QueryResultSet> results)
+    {
+        Results.Clear();
+        foreach (var result in results) Results.Add(result);
+        SelectedResult = Results.FirstOrDefault();
+        OutputTabIndex = 0;
+    }
+    private void AppendMessage(string text)
+    {
+        // PRINT-heavy scripts must not grow the messages pane indefinitely.
+        var updated = string.IsNullOrEmpty(Messages) ? text : Messages + Environment.NewLine + text;
+        Messages = updated.Length > 100_000 ? "[Earlier messages omitted]\n" + updated[^90_000..] : updated;
+    }
+    private void RefreshState()
+    {
+        Notify(nameof(IsConnected)); Notify(nameof(CanExecute)); Notify(nameof(CanEditConnection));
+        Notify(nameof(TransactionLabel)); Notify(nameof(TransactionCount)); Notify(nameof(SessionLabel));
+        ConnectCommand.Refresh(); DemoCommand.Refresh(); DisconnectCommand.Refresh(); SaveProfileCommand.Refresh();
+        NewProfileCommand.Refresh(); RefreshObjectsCommand.Refresh(); CancelCommand.Refresh(); CommitCommand.Refresh(); RollbackCommand.Refresh();
+        RefreshCredentialActions();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        Password = "";
+        catalog.PasswordForgotten -= OnPasswordForgotten;
+        operation?.Cancel();
+        if (idleCompletion is { } completion) await completion.Task;
+        if (session is not null) await session.DisposeAsync();
+        session = null;
+    }
+}

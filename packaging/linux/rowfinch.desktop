@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rowfinch
+GenericName=SQL Database Client
+Comment=Query and explore Azure SQL databases
+Exec=rowfinch
+TryExec=rowfinch
+Icon=rowfinch
+Terminal=false
+Categories=Development;Database;
+Keywords=SQL;Azure;database;query;
+StartupNotify=true
+StartupWMClass=Rowfinch
+Actions=Demo;
+
+[Desktop Action Demo]
+Name=Try demo
+Exec=rowfinch --demo

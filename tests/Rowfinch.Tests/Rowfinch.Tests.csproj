@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Rowfinch.Core/Rowfinch.Core.csproj" />
+    <ProjectReference Include="../../src/Rowfinch.Infrastructure/Rowfinch.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/Rowfinch.Desktop/Rowfinch.Desktop.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" PrivateAssets="all" />
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.1.4" />
+  </ItemGroup>
+</Project>
