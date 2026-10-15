@@ -23,7 +23,9 @@ public sealed class DemoQuerySession : IQuerySession, IObjectMetadataSession
         ];
         messages?.Report("Demo results only. The editor text was not executed against a database.");
         var result = new QueryResultSet("Demo results",
-            [new("Id", "int"), new("Name", "nvarchar"), new("Engine", "nvarchar"), new("Region", "nvarchar"), new("Availability", "decimal")],
+            [new("Id", "int", typeof(int), false), new("Name", "nvarchar", typeof(string), false, 200),
+             new("Engine", "nvarchar", typeof(string), false, 100), new("Region", "nvarchar", typeof(string), true, 100),
+             new("Availability", "decimal", typeof(decimal), false, NumericPrecision: 5, NumericScale: 2)],
             rows.Take(rowLimit).ToArray(), rowLimit < rows.Length);
         return new QueryExecution([result], 0, TimeSpan.FromMilliseconds(600));
     }

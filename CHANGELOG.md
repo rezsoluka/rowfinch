@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.2.0-beta.1 (unreleased preview)
+## 0.2.0-beta.2 — 2026-10-15
+
+- Automatically connect new query tabs, generated scripts, definitions, and opened SQL files using the source tab's active connection, with independent sessions and in-memory credential reuse.
+- Export displayed result rows as typed JSON arrays, including nulls, dates, and Base64 binary values.
+- Generate and preview C# classes with column mappings, nullability, and available validation annotations from result metadata, including empty results.
+- Generate a single JSON object from the first displayed row or a template with null property values; copy or save generated C# and JSON.
+- Preserve duplicate and unnamed SELECT columns with unique JSON and C# property names.
+
+## 0.2.0-beta.1 — 2026-10-15
 
 - Separate Connections and Objects into vertical sidebar tabs with scrolling lists and collapsible connection details.
 - Combine object-type and text filters; select/unselect columns individually or in bulk.

@@ -25,7 +25,9 @@ public sealed record ConnectionProfile
     }
 }
 
-public sealed record ResultColumn(string Name, string TypeName);
+public sealed record ResultColumn(string Name, string TypeName, Type? ClrType = null,
+    bool? IsNullable = null, int? MaxLength = null, int? NumericPrecision = null,
+    int? NumericScale = null, bool? IsKey = null, bool? IsIdentity = null);
 public sealed record QueryResultSet(string Name, IReadOnlyList<ResultColumn> Columns,
     IReadOnlyList<object?[]> Rows, bool IsTruncated);
 public sealed record QueryExecution(IReadOnlyList<QueryResultSet> Results, int TransactionCount, TimeSpan Elapsed);

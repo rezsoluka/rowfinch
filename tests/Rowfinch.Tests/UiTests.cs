@@ -29,6 +29,100 @@ public static class TestAppBuilder
 public sealed class UiTests
 {
     [AvaloniaFact]
+    public async Task NewQueryButtonAndShortcutInheritTheActiveConnection()
+    {
+        await using var workspace = new WorkspaceViewModel(new UiProfiles([]));
+        var window = new MainWindow(workspace);
+        window.Show();
+        await workspace.SelectedTab!.StartDemoAsync();
+        var button = Assert.Single(window.GetVisualDescendants().OfType<Button>(), item => Equals(item.Content, "+ New query"));
+        Click(window, button);
+        var second = workspace.SelectedTab!;
+        await second.ConnectionReady;
+        Assert.True(second.CanExecute);
+        Assert.True(second.IsDemo);
+        Assert.Empty(second.Sql);
+        Assert.Empty(second.Results);
+        window.FindControl<ListBox>("QueryTabs")!.Focus();
+        window.KeyPressQwerty(PhysicalKey.T, RawInputModifiers.Control);
+        window.KeyReleaseQwerty(PhysicalKey.T, RawInputModifiers.Control);
+        var third = workspace.SelectedTab!;
+        await third.ConnectionReady;
+        Assert.Equal(3, workspace.Tabs.Count);
+        Assert.NotSame(second, third);
+        Assert.True(third.CanExecute);
+        Assert.True(third.IsDemo);
+        Assert.Empty(third.Results);
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task ExportMenuGeneratesModelsFromTheSelectedResultWithoutChangingSqlOrResults()
+    {
+        await using var workspace = new WorkspaceViewModel(new UiProfiles([]));
+        var window = new MainWindow(workspace);
+        window.Show();
+        var tab = workspace.SelectedTab!;
+        var view = window.ActiveQueryView!;
+        var export = view.FindControl<Button>("ExportResultButton")!;
+        Assert.False(export.IsEnabled);
+        await tab.StartDemoAsync();
+        window.UpdateLayout();
+        Assert.True(export.IsEnabled);
+        var sourceResult = tab.SelectedResult;
+        var sourceSql = tab.Sql;
+        var menu = Assert.IsType<MenuFlyout>(export.Flyout);
+        Assert.Contains(menu.Items.OfType<MenuItem>(), item => Equals(item.Header, "Rows as JSON…"));
+        var csharp = Assert.Single(menu.Items.OfType<MenuItem>(), item => Equals(item.Header, "C# class with annotations…"));
+        csharp.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        var dialog = Assert.Single(window.OwnedWindows.OfType<ResultModelDialog>());
+        Assert.Equal(0, dialog.FindControl<ComboBox>("ModelFormat")!.SelectedIndex);
+        dialog.FindControl<TextBox>("ClassNameInput")!.Text = "Customer row";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        var preview = dialog.FindControl<TextBox>("GeneratedText")!;
+        Assert.Contains("public class CustomerRow", preview.Text);
+        Assert.Contains("[StringLength(200)]", preview.Text);
+        Assert.Contains("public string? Region", preview.Text);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_MODEL_SCREENSHOT") is { Length: > 0 } path)
+        {
+            dialog.UpdateLayout();
+            using var frame = dialog.CaptureRenderedFrame();
+            Assert.NotNull(frame);
+            frame.Save(path, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        dialog.FindControl<ComboBox>("ModelFormat")!.SelectedIndex = 1;
+        using (var json = System.Text.Json.JsonDocument.Parse(preview.Text!))
+            Assert.Equal("Northwind", json.RootElement.GetProperty("Name").GetString());
+        Click(dialog, dialog.FindControl<CheckBox>("UseFirstRow")!);
+        using (var json = System.Text.Json.JsonDocument.Parse(preview.Text!))
+            Assert.All(json.RootElement.EnumerateObject(), property => Assert.Equal(System.Text.Json.JsonValueKind.Null, property.Value.ValueKind));
+        dialog.Close();
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Same(sourceResult, tab.SelectedResult);
+        Assert.Equal(sourceSql, tab.Sql);
+        // Empty result sets still have metadata for C# and JSON-object generation.
+        var emptyResult = new QueryResultSet("Empty", [new("Count", "bigint", IsNullable: false)], [], false);
+        tab.Results.Add(emptyResult);
+        tab.SelectedResult = emptyResult;
+        Assert.True(export.IsEnabled);
+        var jsonAction = Assert.Single(menu.Items.OfType<MenuItem>(), item => Equals(item.Header, "JSON object…"));
+        jsonAction.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        dialog = Assert.Single(window.OwnedWindows.OfType<ResultModelDialog>());
+        Assert.Equal(1, dialog.FindControl<ComboBox>("ModelFormat")!.SelectedIndex);
+        using (var json = System.Text.Json.JsonDocument.Parse(dialog.FindControl<TextBox>("GeneratedText")!.Text!))
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, json.RootElement.GetProperty("Count").ValueKind);
+        dialog.Close();
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        await tab.RunOperationAsync(_ => { Assert.False(export.IsEnabled); return Task.CompletedTask; }, "Testing export availability");
+        Assert.True(export.IsEnabled);
+        tab.SelectedResult = null;
+        Assert.False(export.IsEnabled);
+        window.Close();
+    }
+
+    [AvaloniaFact]
     public async Task SidebarFiltersAndColumnControlsDriveSelectedColumnUpdateFromTheClickedObject()
     {
         var profiles = Enumerable.Range(1, 20).Select(i => new ConnectionProfile

@@ -7,7 +7,7 @@ namespace Rowfinch.Tests;
 public sealed class QueryTabsTests
 {
     [Fact]
-    public async Task NewTabCopiesSettingsButNeverSharesPasswordOrConnectsAutomatically()
+    public async Task DisconnectedSourceOnlyCopiesSettingsAndLeavesPasswordBlank()
     {
         var sessionCount = 0;
         await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => { sessionCount++; return new Session("test"); });
@@ -25,6 +25,156 @@ public sealed class QueryTabsTests
     }
 
     [Fact]
+    public async Task ConnectedSourceOpensIndependentTabsWithLiveCredentialsAndNeverRunsTheirSql()
+    {
+        var sessions = new[] { new Session("first"), new Session("second"), new Session("third") };
+        var queue = new Queue<Session>(sessions);
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => queue.Dequeue());
+        var first = workspace.SelectedTab!;
+        Configure(first, "one"); first.Password = "session-secret";
+        await first.ConnectAsync();
+        Assert.Empty(first.Password);
+        var second = workspace.NewTab("UPDATE dbo.Example SET Value = 1;", "draft.sql");
+        await second.ConnectionReady;
+        Assert.True(second.CanExecute);
+        Assert.Empty(second.Password);
+        Assert.Empty(second.Results);
+        Assert.Equal("session-secret", sessions[1].OpenPassword);
+        Assert.Equal(sessions[0].OpenProfile, sessions[1].OpenProfile);
+        Assert.Equal(0, sessions[1].ExecutionCalls);
+        Assert.True(await workspace.TryCloseTabAsync(first, _ => Task.FromResult(true)));
+        Assert.True(sessions[0].Disposed);
+        Assert.False(sessions[1].Disposed);
+        var third = workspace.NewTab();
+        await third.ConnectionReady;
+        Assert.True(third.CanExecute);
+        Assert.Equal("session-secret", sessions[2].OpenPassword);
+        await second.DisconnectAsync();
+        Assert.True(third.IsConnected);
+        var disconnected = workspace.NewTab(connectionSource: second);
+        await disconnected.ConnectionReady;
+        Assert.False(disconnected.IsConnected);
+        Assert.Empty(disconnected.Password);
+    }
+
+    [Fact]
+    public async Task FailedInheritedLoginKeepsTheDocumentAndSourceSessionUsable()
+    {
+        var sourceSession = new Session("source");
+        var failedSession = new Session("failure") { FailLogin = true };
+        var sessions = new Queue<Session>([sourceSession, failedSession]);
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => sessions.Dequeue());
+        var source = workspace.SelectedTab!;
+        Configure(source, "one"); await source.ConnectAsync();
+        var child = workspace.NewTab("SELECT 123;", "example.sql");
+        await child.ConnectionReady;
+        Assert.False(child.IsConnected);
+        Assert.True(child.CanEditConnection);
+        Assert.Equal("Action failed", child.Status);
+        Assert.Equal("SELECT 123;", child.Sql);
+        Assert.True(failedSession.Disposed);
+        Assert.True(source.CanExecute);
+        Assert.False(sourceSession.Disposed);
+        Assert.Equal(0, sourceSession.ExecutionCalls);
+    }
+
+    [Fact]
+    public async Task RapidNewTabsUseTheSameTargetEvenWhileTheFirstInheritedLoginIsPending()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new Session("pending") { LoginStarted = started, LoginRelease = release };
+        var ready = new Session("ready");
+        var sessions = new Queue<Session>([new("source"), pending, ready]);
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => sessions.Dequeue());
+        var source = workspace.SelectedTab!;
+        Configure(source, "one"); source.Password = "session-secret"; await source.ConnectAsync();
+        // The live connection target wins over any later form edits.
+        source.Database = "edited-form-value";
+        var first = workspace.NewTab();
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var next = workspace.NewTab();
+        await next.ConnectionReady;
+        Assert.True(next.CanExecute);
+        Assert.Equal("one", next.Database);
+        Assert.Equal("one", ready.OpenProfile!.Database);
+        Assert.Equal("session-secret", ready.OpenPassword);
+        first.Cancel();
+        await first.ConnectionReady;
+        Assert.False(first.IsConnected);
+        Assert.True(pending.Disposed);
+        Assert.True(next.IsConnected);
+        Assert.True(source.IsConnected);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClosingAnAutomaticallyConnectingTabCancelsItsLoginAndPreservesTheSource(bool ignoreCancellation)
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sourceSession = new Session("source");
+        var pending = new Session("pending") { LoginStarted = started, LoginRelease = release, IgnoreLoginCancellation = ignoreCancellation };
+        var sessions = new Queue<Session>([sourceSession, pending]);
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => sessions.Dequeue());
+        var source = workspace.SelectedTab!;
+        Configure(source, "one"); await source.ConnectAsync();
+        var child = workspace.NewTab();
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.True(child.IsBusy);
+        var closing = workspace.TryCloseTabAsync(child, _ => Task.FromResult(true));
+        if (ignoreCancellation) release.TrySetResult();
+        Assert.True(await closing);
+        Assert.True(pending.Disposed);
+        Assert.False(child.IsConnected);
+        Assert.True(source.CanExecute);
+        Assert.Same(source, workspace.SelectedTab);
+        Assert.False(sourceSession.Disposed);
+    }
+
+    [Fact]
+    public async Task ExplicitOriginForOpenedFilesWinsOverTheSelectedTabsConnection()
+    {
+        var opened = new List<Session>();
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () =>
+        {
+            var session = new Session($"session{opened.Count}"); opened.Add(session); return session;
+        });
+        var source = workspace.SelectedTab!;
+        Configure(source, "one");
+        var other = workspace.NewTab();
+        Configure(other, "two");
+        await source.ConnectAsync(); await other.ConnectAsync();
+        var firstFile = workspace.NewTab("SELECT 1;", "first.sql", source);
+        var secondFile = workspace.NewTab("SELECT 2;", "second.sql", source);
+        await Task.WhenAll(firstFile.ConnectionReady, secondFile.ConnectionReady);
+        Assert.True(firstFile.CanExecute);
+        Assert.True(secondFile.CanExecute);
+        Assert.Equal("one", opened[2].OpenProfile!.Database);
+        Assert.Equal("one", opened[3].OpenProfile!.Database);
+        Assert.Equal("two", other.Database);
+        Assert.All(opened, session => Assert.Equal(0, session.ExecutionCalls));
+    }
+
+    [Fact]
+    public async Task DemoTabsInheritDemoConnectionWithoutRunningTheNewDocument()
+    {
+        await using var workspace = new WorkspaceViewModel(new MemoryStore());
+        var source = workspace.SelectedTab!;
+        await source.StartDemoAsync();
+        var child = workspace.NewTab("SELECT 2;");
+        await child.ConnectionReady;
+        Assert.True(child.IsDemo);
+        Assert.True(child.CanExecute);
+        Assert.Empty(child.Results);
+        Assert.Equal("SELECT 2;", child.Sql);
+        await child.ExecuteAsync();
+        Assert.NotEmpty(child.Results);
+        Assert.NotEmpty(source.Results);
+    }
+
+    [Fact]
     public async Task TabsKeepSeparateSessionsDocumentsResultsAndTransactionState()
     {
         var sessions = new Queue<Session>([new("first") { Transactions = 1 }, new("second")]);
@@ -36,7 +186,7 @@ public sealed class QueryTabsTests
         await first.ExecuteAsync();
         var firstResult = first.SelectedResult;
         var second = workspace.NewTab();
-        Configure(second, "two");
+        await second.ConnectionReady;
         second.Sql = "SELECT second;";
         await second.ConnectAsync();
         await second.ExecuteAsync();
@@ -49,7 +199,7 @@ public sealed class QueryTabsTests
         Assert.Equal(1, first.TransactionCount);
         Assert.Equal(0, second.TransactionCount);
         Assert.Contains("one", first.ConnectionLabel);
-        Assert.Contains("two", second.ConnectionLabel);
+        Assert.Contains("one", second.ConnectionLabel);
     }
 
     [Fact]
@@ -201,17 +351,29 @@ public sealed class QueryTabsTests
     {
         private bool executing;
         public bool Block { get; init; }
+        public bool FailLogin { get; init; }
+        public bool IgnoreLoginCancellation { get; init; }
+        public TaskCompletionSource? LoginStarted { get; init; }
+        public TaskCompletionSource? LoginRelease { get; init; }
+        public string? OpenPassword { get; private set; }
+        public ConnectionProfile? OpenProfile { get; private set; }
+        public int ExecutionCalls { get; private set; }
         public int Transactions { get; init; }
         public bool IsConnected { get; private set; }
         public bool Disposed { get; private set; }
         public bool DisposedWhileExecuting { get; private set; }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task OpenAsync(ConnectionProfile profile, string? password, CancellationToken cancellationToken)
-        { IsConnected = true; return Task.CompletedTask; }
+        public async Task OpenAsync(ConnectionProfile profile, string? password, CancellationToken cancellationToken)
+        {
+            if (FailLogin) throw new InvalidOperationException("Login failed.");
+            LoginStarted?.TrySetResult();
+            if (LoginRelease is not null) await LoginRelease.Task.WaitAsync(IgnoreLoginCancellation ? CancellationToken.None : cancellationToken);
+            OpenProfile = profile; OpenPassword = password; IsConnected = true;
+        }
         public async Task<QueryExecution> ExecuteAsync(string sql, int rowLimit, int timeoutSeconds, IProgress<string>? messages, CancellationToken cancellationToken)
         {
-            executing = true; Started.TrySetResult();
+            ExecutionCalls++; executing = true; Started.TrySetResult();
             try
             {
                 if (Block) await Release.Task.WaitAsync(cancellationToken);

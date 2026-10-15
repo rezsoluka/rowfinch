@@ -173,7 +173,17 @@
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
                   </ComboBox>
                   <TextBlock Grid.Column="1" Text="{Binding ResultSummary}" Classes="muted" VerticalAlignment="Center" Margin="12,0" FontSize="11" TextTrimming="CharacterEllipsis" />
-                  <Button Grid.Column="2" Content="Export CSV…" Click="OnExportCsv" IsEnabled="{Binding !IsBusy}" />
+                  <Button x:Name="ExportResultButton" Grid.Column="2" Content="Export…" IsEnabled="{Binding CanExportResult}">
+                    <Button.Flyout>
+                      <MenuFlyout>
+                        <MenuItem Header="Rows as CSV…" Click="OnExportCsv" />
+                        <MenuItem Header="Rows as JSON…" Click="OnExportJson" />
+                        <Separator />
+                        <MenuItem Header="C# class with annotations…" Click="OnGenerateCSharp" />
+                        <MenuItem Header="JSON object…" Click="OnGenerateJsonObject" />
+                      </MenuFlyout>
+                    </Button.Flyout>
+                  </Button>
                 </Grid>
                 <TableView x:Name="ResultsTable" Grid.Row="1" CanUserResizeColumns="True" SelectionMode="Multiple,Toggle" Background="Transparent">
                   <TableView.ContextMenu><ContextMenu><MenuItem Header="Copy selected rows" Click="OnCopyRows" /></ContextMenu></TableView.ContextMenu>

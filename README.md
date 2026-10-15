@@ -10,7 +10,7 @@ The self-contained `.deb` includes .NET, a desktop launcher, and the Rowfinch ic
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.1_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.2_amd64.deb
 rowfinch
 ```
 
@@ -52,7 +52,8 @@ dotnet run --project src/Rowfinch.Desktop -- --demo
 - Vertical Connections/Objects sidebar tabs, combined object-type and text filters, lazy column metadata, and selectable columns.
 - Object actions for top-100 previews, SELECT/INSERT/UPDATE templates from selected columns, SQL definitions, copying qualified names, and individual column refresh.
 - Cancellation, query timeouts, affected-row counts, SQL error messages, and transaction-state display with commit/rollback actions.
-- Virtualized results, selectable cell text, copying selected rows, and CSV export of displayed rows.
+- Virtualized results, selectable cell text, copying selected rows, and CSV/JSON export of displayed rows.
+- C# classes with data annotations and JSON objects generated from SELECT result metadata, with preview, copy, and save actions.
 - A clearly labeled demo workspace and automated tests that do not require database credentials.
 - A self-contained Ubuntu `.deb`, desktop launcher, application icon, and package lifecycle checks.
 
@@ -60,7 +61,9 @@ Each SQL session remains open between runs, so temporary tables and explicit tra
 
 ## Query tabs
 
-Choose **+ New query** or press `Ctrl+T` to create a tab. New tabs copy connection settings from the current tab and start disconnected; passwords are never copied. Connect each tab explicitly. Connections, temporary tables, transactions, results, and running operations belong only to that tab. Switching tabs does not interrupt execution. The tab subtitle shows its database or disconnected/demo state, and the header shows the active tab's full connection target.
+Choose **+ New query** or press `Ctrl+T` to create a tab. When the current tab is connected, new tabs automatically connect to the same server and database with the same authentication. Generated SQL, opened definitions, and opened SQL files use their source tab's connection too. Each tab opens its own database session, so temporary tables, transactions, results, and running operations remain independent. A disconnected source copies only connection settings; a demo source creates another demo tab. New documents never run automatically. Switching tabs does not interrupt execution. The tab subtitle shows its database or disconnected/demo state, and the header shows the active tab's full connection target.
+
+SQL passwords for active connections are retained privately in memory so additional tabs can connect without prompting. They are not placed in new tabs' password fields or saved to profiles. Closing or disconnecting a tab releases its reference to those credentials; other tabs already using the same connection settings continue independently. Inheriting a connection does not retrieve or rewrite the desktop keyring. If an automatic connection fails, the SQL document stays open, Messages shows the failure, and you can retry through Connect.
 
 - `Ctrl+T`: new query tab.
 - `Ctrl+W`: close the current tab.
@@ -93,15 +96,25 @@ Right-click an object or one of its columns for the available actions:
 
 Replace every `<...>` placeholder before running an INSERT or UPDATE template. These are draft scripts; generation never executes them. A view must be updatable for a write template to succeed. Selecting no columns, or only columns unsuitable for the requested write, produces guidance without opening an empty script.
 
-Generated SQL and definitions open as unsaved documents with the source tab's connection settings and no copied password. They start disconnected; connect explicitly before running them. Reading metadata preserves the original SQL and results, uses the current database session, and supports cancellation. Other tabs remain usable while metadata loads.
+Generated SQL and definitions open as unsaved documents and automatically connect using the source tab's active connection. Generation never executes the new document; once it finishes connecting, use Run when ready. Reading metadata preserves the original SQL and results, uses the current database session, and supports cancellation. Other tabs remain usable while metadata loads.
 
 Objects and columns reflect the connected user's metadata visibility. Definitions may require `VIEW DEFINITION` permission; encrypted modules and CLR objects have no readable SQL definition. Missing metadata is reported in Messages with a retry/refresh path. See Microsoft's [column catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-columns-transact-sql), [rowversion](https://learn.microsoft.com/en-us/sql/t-sql/data-types/rowversion-transact-sql), and [SQL module catalog](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-sql-modules-transact-sql) documentation.
+
+## Exporting results and generating models
+
+Run a SELECT and choose its result set in the Results dropdown, then open **Export…**:
+
+- **Rows as CSV…** and **Rows as JSON…** save all displayed rows of that result set. The display row limit applies; export does not execute the query again or fetch additional rows. JSON uses an array of objects, retaining numbers, booleans, and SQL NULL as JSON null. Dates use ISO strings, binary values use Base64 strings, and SQL time values use duration strings. Non-finite floating-point values and unsupported provider-specific values use their invariant display strings. An empty result exports as `[]`.
+- **C# class with annotations…** opens a preview with an editable class name. Properties use SQL/CLR types and reported nullability, with `[Column]`, `[JsonPropertyName]`, `[Required]`, `[StringLength]`, `[MaxLength]`, and identity/timestamp annotations where metadata supports them. Decimal precision/scale is retained in the column type. Unknown nullability permits null. Keys and relationships are not guessed from names: a reported single-column result key can use `[Key]`; composite keys require explicit ORM configuration. Normal query execution does not request extra key-discovery metadata, so key annotations may be absent. The generated class describes the SELECT projection and needs review before use as a database entity.
+- **JSON object…** opens a single object using the first displayed row. Uncheck **Use values from the first displayed row** for a template with null property values. Queries with no rows also produce this template.
+
+Both generation options offer **Copy** and **Save…**, work with zero-row results, and preserve the SQL editor and existing results. Generation uses the selected result set from the most recent execution, so run the query again after editing its SELECT. It does not parse or execute editor text. Duplicate/unnamed result columns receive unique JSON names; C# identifiers are normalized and made unique, with JSON mappings matching the export. Column aliases remain in the column annotations. Generated C# targets nullable-aware .NET projects and uses only framework data annotation and JSON attributes.
 
 ## Password keyring
 
 For SQL authentication, check **Remember password** and connect with your password. After authentication succeeds, Rowfinch saves the connection profile and stores the password in the desktop keyring. Saving a profile alone records the preference without storing an unverified password.
 
-For subsequent connections or new tabs using that saved profile, leave the password field blank. Rowfinch requests the password from the keyring only when you connect; it does not populate the password field when you select a profile. An explicitly entered password takes precedence and updates the saved password after successful authentication.
+When connecting a saved profile from a disconnected tab, leave the password field blank to retrieve it from the keyring. Rowfinch does not populate the password field when you select a profile. New tabs created from a connected tab reuse its active authentication without accessing the keyring. An explicitly entered password takes precedence for a manual connection and updates the saved password after successful authentication.
 
 Credentials are matched by profile ID plus the exact database and user settings and a case-normalized server name. Editing the target cannot reuse the old target's password automatically. New profiles have separate credential identities even when their settings are identical.
 

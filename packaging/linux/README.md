@@ -7,7 +7,7 @@ Rowfinch packages include the .NET runtime, the app, a `rowfinch` command, a des
 From the repository root:
 
 ```bash
-sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.1_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.2_amd64.deb
 rowfinch
 ```
 
@@ -57,9 +57,9 @@ docker build --progress=plain -f packaging/linux/Dockerfile -t rowfinch-package-
 By default it reinstalls the same version. To exercise an actual version upgrade, first build a temporary next-version package, then provide it:
 
 ```bash
-./scripts/build-deb.sh --version 0.2.0-beta.2
+./scripts/build-deb.sh --version 0.2.0-beta.3
 docker build --progress=plain -f packaging/linux/Dockerfile \
-  --build-arg UPGRADE_PACKAGE=rowfinch_0.2.0~beta.2_amd64.deb \
+  --build-arg UPGRADE_PACKAGE=rowfinch_0.2.0~beta.3_amd64.deb \
   -t rowfinch-package-test .
 ```
 
@@ -87,12 +87,16 @@ Docker access was unavailable on the development machine; the clean installation
 
 These checks do not require changing database objects. Use a database/account appropriate for the data you intend to preview.
 
-## Preview acceptance checks (0.2.0-beta.1)
+## Preview acceptance checks (0.2.0-beta.2)
 
 1. Switch between the vertical Connections and Objects tabs. Collapse connection details to use the saved-profile list's full height; select a profile to open its details. Check the form and Connect/Disconnect buttons at your preferred window size.
 2. In Objects, select Tables, then add Views. Enter a text filter and check that both constraints apply. All restores every type while keeping the text filter.
 3. Expand a table, uncheck a few columns, and generate SELECT. Check that only the selected columns appear. Try Select all and Unselect all, including generating with an empty selection.
 4. Generate INSERT and UPDATE. Check the selected writable columns, omitted identity/generated fields, and UPDATE primary-key predicate. For a view without keys, check the required row-filter placeholder. Replace placeholders before executing any draft.
 5. Filter an expanded object out and back in, switch query tabs, and refresh its columns. Verify column choices are retained. Full object-list Refresh intentionally resets loaded metadata and choices.
+6. In Results, choose Export → Rows as JSON and check numeric, boolean, null, date, and binary values. A display-limited result exports only the displayed rows; a zero-row result exports an empty array.
+7. Choose Export → C# class with annotations, edit the class name, then copy or save the preview. Verify property types, nullable columns, and lengths against your SELECT. Repeat with a SELECT returning no rows.
+8. Choose Export → JSON object. Check the first row's values, toggle the first-row option to get null placeholders, and save/copy the result. Test a SELECT with duplicate aliases and unnamed expressions.
+9. Connect a tab, then create tabs through New query, Ctrl+T, Generate SELECT/INSERT/UPDATE, Open definition, and Open SQL. Each should connect automatically to the source database without executing its document. Verify that disconnecting or cancelling in one tab leaves the others usable. A tab created from a disconnected source should stay disconnected.
 
-Use demo mode for initial UI/template checks, then verify metadata and generated SQL against your intended Azure schema. The preview is for acceptance testing before committing or publishing the changes.
+Use demo mode for initial UI/template checks, then verify metadata and generated SQL against your intended Azure schema.

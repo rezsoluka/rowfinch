@@ -102,7 +102,7 @@ public sealed class ObjectBrowserTests
     public async Task DefinitionUsesOriginSettingsWhenUserSwitchesTabsWhileLoading()
     {
         var session = new MetadataSession { WaitForDefinition = true };
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var origin = workspace.SelectedTab!;
         origin.Server = "origin.database.windows.net"; origin.Database = "origin"; origin.UserName = "reader";
         origin.Password = "session-only";
@@ -120,7 +120,8 @@ public sealed class ObjectBrowserTests
         Assert.Equal("origin.database.windows.net", generated.Server);
         Assert.Equal("reader", generated.UserName);
         Assert.Empty(generated.Password);
-        Assert.False(generated.IsConnected);
+        await generated.ConnectionReady;
+        Assert.True(generated.IsConnected);
         Assert.True(generated.IsDirty);
         Assert.Equal("CREATE VIEW [dbo].[CustomerView] AS SELECT 1 AS [Id];", generated.Sql);
         Assert.Equal(0, session.ExecutionCalls);
@@ -130,7 +131,7 @@ public sealed class ObjectBrowserTests
     public async Task GenerateSelectCachesColumnsAndNeverExecutesSql()
     {
         var session = new MetadataSession();
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var origin = workspace.SelectedTab!;
         origin.Server = "test"; origin.Database = "db"; origin.UserName = "reader";
         await origin.ConnectAsync();
@@ -169,7 +170,7 @@ public sealed class ObjectBrowserTests
     public async Task MetadataCancellationAndCloseDoNotCreateLateDocumentsOrOverlapCommands()
     {
         var session = new MetadataSession { WaitForDefinition = true };
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var origin = workspace.SelectedTab!;
         origin.Server = "test"; origin.Database = "db"; origin.UserName = "reader";
         await origin.ConnectAsync();
@@ -189,13 +190,24 @@ public sealed class ObjectBrowserTests
     public async Task EmptyDefinitionDoesNotCreateAnEmptyTab()
     {
         var session = new MetadataSession { Definition = "" };
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var origin = workspace.SelectedTab!;
         origin.Server = "test"; origin.Database = "db"; origin.UserName = "reader";
         await origin.ConnectAsync();
         await origin.OpenDefinitionAsync(origin.Objects[1]);
         Assert.Single(workspace.Tabs);
         Assert.Contains("Definition unavailable", origin.Messages);
+    }
+
+    private static Func<IQuerySession> SessionFactory(MetadataSession source)
+    {
+        var usedSource = false;
+        return () =>
+        {
+            if (usedSource) return new MetadataSession();
+            usedSource = true;
+            return source;
+        };
     }
 
     private static QueryTabViewModel CreateTab(MetadataSession session) => new(new MemoryProfiles(), () => session)
@@ -233,7 +245,7 @@ public sealed class ObjectBrowserTests
         {
             ColumnsOverride = [new(1, "Id", "int", false, 1, IsIdentity: true), new(2, "Name", "nvarchar(100)", false), new(3, "Email", "nvarchar(100)", true)]
         };
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var source = workspace.SelectedTab!;
         source.Server = "test"; source.Database = "db"; source.UserName = "reader";
         await source.ConnectAsync();
@@ -257,7 +269,8 @@ public sealed class ObjectBrowserTests
         Assert.Equal("Email", Assert.Single(root.SelectedColumns).Name);
         Assert.Equal(sql, source.Sql);
         Assert.Equal("db", workspace.SelectedTab.Database);
-        Assert.False(workspace.SelectedTab.IsConnected);
+        await workspace.SelectedTab.ConnectionReady;
+        Assert.True(workspace.SelectedTab.IsConnected);
         Assert.True(workspace.SelectedTab.IsDirty);
         Assert.Equal(0, session.ExecutionCalls);
         Assert.Equal(1, session.ColumnCalls);
@@ -296,7 +309,7 @@ public sealed class ObjectBrowserTests
     public async Task CancellingTemplateMetadataLoadDoesNotCreateDocumentsAfterTabSwitch()
     {
         var session = new MetadataSession { WaitForColumns = true };
-        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), () => session);
+        await using var workspace = new WorkspaceViewModel(new MemoryProfiles(), SessionFactory(session));
         var origin = workspace.SelectedTab!;
         origin.Server = "test"; origin.Database = "db"; origin.UserName = "reader";
         await origin.ConnectAsync();

@@ -132,8 +132,7 @@ public partial class MainWindow : Window
                 using var reader = new StreamReader(input, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
                 var text = await reader.ReadToEndAsync();
                 if (!workspace.CanManageTabs) return;
-                var tab = workspace.NewTab(text, file.Name);
-                if (source is not null) tab.CopyConnectionSettingsFrom(source);
+                workspace.NewTab(text, file.Name, source);
             }
         }
         catch (Exception error) { workspace.SelectedTab?.ReportError(error); }

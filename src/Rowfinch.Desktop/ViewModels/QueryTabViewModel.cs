@@ -13,6 +13,15 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     private bool rememberPassword;
     private string keyringMessage = "Passwords are session-only unless you choose to remember them.";
     private IQuerySession? session;
+    // Keep credentials private and in memory while connected tabs use this target.
+    // This class has no generated ToString that could expose its password.
+    private sealed class LiveConnection(ConnectionProfile profile, string? password)
+    {
+        public ConnectionProfile Profile { get; } = profile;
+        public string? Password { get; } = profile.Authentication == AuthenticationKind.SqlPassword ? password : null;
+    }
+    private LiveConnection? liveConnection;
+    private LiveConnection? pendingConnection;
     private CancellationTokenSource? operation;
     private TaskCompletionSource? idleCompletion;
     private bool disposed;
@@ -88,6 +97,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public ActionCommand NewProfileCommand { get; }
     public ActionCommand CancelCommand { get; }
     public bool IsConnected => session?.IsConnected == true;
+    public Task ConnectionReady { get; private set; } = Task.CompletedTask;
     public bool CanExecute => IsConnected && !IsBusy && !IsClosing;
     public bool CanEditConnection => !IsBusy && !IsConnected && !IsClosing;
     public bool IsClosing
@@ -206,20 +216,23 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public QueryResultSet? SelectedResult
     {
         get => selectedResult;
-        set { Set(ref selectedResult, value); Notify(nameof(ResultSummary)); }
+        set { Set(ref selectedResult, value); Notify(nameof(ResultSummary)); Notify(nameof(CanExportResult)); }
     }
+    public bool CanExportResult => !IsBusy && !IsClosing && SelectedResult is not null;
     public string ResultSummary => SelectedResult is { } result
         ? $"{result.Rows.Count:N0} rows · {result.Columns.Count} columns" + (result.IsTruncated ? " · display limited" : "")
         : "Results appear here after you run a query";
 
-    public Task ConnectAsync() => RunOperationAsync(async token =>
+    public Task ConnectAsync() => ConnectAsync(null);
+
+    private Task ConnectAsync(LiveConnection? inherited) => RunOperationAsync(async token =>
     {
         if (IsConnected) return;
-        var profile = CurrentProfile();
+        var profile = inherited is null ? CurrentProfile() : inherited.Profile with { RememberPassword = RememberPassword };
         profile.Validate();
         var credentialVersion = catalog.GetCredentialVersion(profile.Id);
-        string? connectionPassword = Password;
-        if (profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword && string.IsNullOrEmpty(connectionPassword))
+        string? connectionPassword = inherited is null ? Password : inherited.Password;
+        if (inherited is null && profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword && string.IsNullOrEmpty(connectionPassword))
         {
             try { connectionPassword = await credentialStore.GetAsync(CredentialIdentity.FromProfile(profile), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -235,18 +248,20 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
             }
         }
         if (session is not null) { await session.DisposeAsync(); session = null; }
+        liveConnection = null;
         allObjects.Clear(); Objects.Clear(); Notify(nameof(ObjectCountLabel));
         var candidate = sessionFactory();
-        try { await candidate.OpenAsync(profile, connectionPassword, token); }
+        try { await candidate.OpenAsync(profile, connectionPassword, token); token.ThrowIfCancellationRequested(); }
         catch { await candidate.DisposeAsync(); throw; }
         session = candidate;
+        liveConnection = inherited ?? new LiveConnection(profile, connectionPassword);
         IsDemo = false;
         transactionCount = 0;
         Password = "";
         ConnectionLabel = $"{profile.Database} · {profile.Server}";
         AppendMessage($"Connected to {profile.Database}. Encryption and certificate validation are enabled.");
         Status = "Connected";
-        if (profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword)
+        if (inherited is null && profile.Authentication == AuthenticationKind.SqlPassword && profile.RememberPassword)
         {
             try
             {
@@ -273,6 +288,8 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
                 Status = "Connected · password storage failed";
             }
         }
+        else if (inherited is not null && profile.Authentication == AuthenticationKind.SqlPassword)
+            KeyringMessage = "Connected using the active connection's session credentials.";
         else if (profile.Authentication == AuthenticationKind.SqlPassword)
             KeyringMessage = "Connected with a session-only password.";
         ConnectionDetailsExpanded = false; SidebarTabIndex = 1;
@@ -281,16 +298,22 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         { AppendMessage($"Connected, but object discovery failed: {error.Message}"); }
     }, "Connecting…");
 
-    public Task StartDemoAsync() => RunOperationAsync(async token =>
+    public Task StartDemoAsync() => StartDemoAsync(true);
+
+    private Task StartDemoAsync(bool loadSampleResults) => RunOperationAsync(async token =>
     {
         if (IsConnected) return;
         session = new DemoQuerySession();
+        liveConnection = null;
         IsDemo = true;
         ConnectionLabel = "Demo workspace · no database connection";
         transactionCount = 0;
         await LoadObjectsAsync(token);
-        var execution = await session.ExecuteAsync(Sql, RowLimit, TimeoutSeconds, null, token);
-        SetResults(execution.Results);
+        if (loadSampleResults)
+        {
+            var execution = await session.ExecuteAsync(Sql, RowLimit, TimeoutSeconds, null, token);
+            SetResults(execution.Results);
+        }
         AppendMessage("Demo mode: results are sample data. SQL text is not executed.");
         Status = "Demo ready";
         ConnectionDetailsExpanded = false; SidebarTabIndex = 1;
@@ -300,6 +323,8 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     {
         if (session is not null) await session.DisposeAsync();
         session = null;
+        liveConnection = null;
+        ConnectionReady = Task.CompletedTask;
         IsDemo = false;
         allObjects.Clear(); Objects.Clear();
         ConnectionDetailsExpanded = true; SidebarTabIndex = 0; Notify(nameof(ObjectCountLabel));
@@ -378,13 +403,34 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public void CopyConnectionSettingsFrom(QueryTabViewModel source)
     {
         if (!CanEditConnection) return;
+        var inherited = source.IsConnected ? source.liveConnection : source.pendingConnection;
+        var profile = inherited is { } active
+            ? active.Profile with { RememberPassword = source.RememberPassword } : source.CurrentProfile();
         selectedProfile = source.selectedProfile;
+        if (source.IsConnected || inherited is not null) draftProfileId = profile.Id;
         Notify(nameof(SelectedProfile));
-        ProfileName = source.ProfileName; Server = source.Server; Database = source.Database;
-        UserName = source.UserName; AuthenticationIndex = source.AuthenticationIndex;
+        ProfileName = profile.Name; Server = profile.Server; Database = profile.Database;
+        UserName = profile.UserName; AuthenticationIndex = (int)profile.Authentication;
         Password = "";
-        RememberPassword = source.selectedProfile?.RememberPassword == true && source.RememberPassword && IsSqlAuthentication;
+        RememberPassword = profile.RememberPassword && IsSqlAuthentication;
         RefreshCredentialActions();
+    }
+
+    internal void InitializeConnectionFrom(QueryTabViewModel source)
+    {
+        if (!CanEditConnection) return;
+        CopyConnectionSettingsFrom(source);
+        if (source.IsClosing || source.disposed) return;
+        if (source.IsConnected && source.IsDemo) ConnectionReady = StartDemoAsync(false);
+        else if ((source.IsConnected ? source.liveConnection : source.pendingConnection) is { } active)
+            ConnectionReady = ConnectInheritedAsync(active);
+    }
+
+    private async Task ConnectInheritedAsync(LiveConnection inherited)
+    {
+        pendingConnection = inherited;
+        try { await ConnectAsync(inherited); }
+        finally { pendingConnection = null; }
     }
 
     public Task ForgetPasswordAsync() => RunOperationAsync(token => catalog.WithCredentialLockAsync(async () =>
@@ -522,7 +568,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         };
         token.ThrowIfCancellationRequested();
         DocumentRequested?.Invoke(this, text, $"{item.DisplayName}.{kind.ToString().ToLowerInvariant()}.sql");
-    }, $"Generating {kind.ToString().ToUpperInvariant()}…", "SQL opened in a new tab — connect to run");
+    }, $"Generating {kind.ToString().ToUpperInvariant()}…", "SQL opened in a new tab");
 
     public Task OpenDefinitionAsync(ObjectBrowserNode node) => RunOperationAsync(async token =>
     {
@@ -532,7 +578,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         token.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(definition)) throw new InvalidOperationException("Definition unavailable. Check VIEW DEFINITION permission.");
         DocumentRequested?.Invoke(this, definition, $"{item.DisplayName}.sql");
-    }, "Loading definition…", "Definition opened in a new tab — connect to run");
+    }, "Loading definition…", "Definition opened in a new tab");
 
     private async Task LoadObjectsAsync(CancellationToken token)
     {
@@ -566,6 +612,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     }
     private void RefreshState()
     {
+        Notify(nameof(CanExportResult));
         Notify(nameof(IsConnected)); Notify(nameof(CanExecute)); Notify(nameof(CanEditConnection)); Notify(nameof(ObjectCountLabel));
         Notify(nameof(TransactionLabel)); Notify(nameof(TransactionCount)); Notify(nameof(SessionLabel));
         ConnectCommand.Refresh(); DemoCommand.Refresh(); DisconnectCommand.Refresh(); SaveProfileCommand.Refresh();
@@ -582,5 +629,7 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         if (idleCompletion is { } completion) await completion.Task;
         if (session is not null) await session.DisposeAsync();
         session = null;
+        liveConnection = null;
+        ConnectionReady = Task.CompletedTask;
     }
 }

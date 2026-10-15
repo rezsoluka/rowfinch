@@ -71,7 +71,7 @@ public sealed class KeyringTests
     }
 
     [Fact]
-    public async Task AnotherTabRetrievesSavedPasswordJustBeforeConnecting()
+    public async Task InheritedConnectionReusesLiveCredentialsWithoutReadingOrRewritingTheKeyring()
     {
         var keyring = new MemoryKeyring();
         var firstSession = new Session();
@@ -85,8 +85,9 @@ public sealed class KeyringTests
         Assert.Equal("", second.Password);
         Assert.True(second.RememberPassword);
         Assert.Equal(0, keyring.GetCalls);
-        await second.ConnectAsync();
-        Assert.Equal(1, keyring.GetCalls);
+        await second.ConnectionReady;
+        Assert.Equal(0, keyring.GetCalls);
+        Assert.Equal(1, keyring.StoreCalls);
         Assert.Equal(Password, secondSession.OpenPassword);
         Assert.True(first.IsConnected);
         Assert.True(second.IsConnected);
@@ -237,8 +238,9 @@ public sealed class KeyringTests
         await using var workspace = new WorkspaceViewModel(new ProfileStore(), () => sessions.Dequeue(), keyring);
         var first = workspace.SelectedTab!;
         Configure(first); first.Password = Password; first.RememberPassword = true;
-        await first.ConnectAsync();
         var second = workspace.NewTab();
+        await first.ConnectAsync();
+        second.SelectedProfile = Assert.Single(workspace.Profiles);
         var connecting = second.ConnectAsync();
         await started.Task.WaitAsync(TestContext.Current.CancellationToken);
         await first.ForgetPasswordAsync();
@@ -259,10 +261,11 @@ public sealed class KeyringTests
         await using var workspace = new WorkspaceViewModel(new ProfileStore(), () => new Session(), keyring);
         var first = workspace.SelectedTab!;
         Configure(first); first.Password = Password; first.RememberPassword = true;
+        var second = workspace.NewTab();
         await first.ConnectAsync();
+        second.SelectedProfile = Assert.Single(workspace.Profiles);
         keyring.StoreStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         keyring.StoreRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var second = workspace.NewTab();
         var connecting = second.ConnectAsync();
         await keyring.StoreStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
         var forgetting = first.ForgetPasswordAsync();
@@ -298,6 +301,12 @@ public sealed class KeyringTests
         await tab.ConnectAsync();
         Assert.True(tab.IsConnected);
         Assert.False(tab.RememberPassword);
+        Assert.Equal(0, keyring.GetCalls + keyring.StoreCalls + keyring.DeleteCalls);
+        var child = workspace.NewTab();
+        await child.ConnectionReady;
+        Assert.True(child.CanExecute);
+        Assert.Equal(1, child.AuthenticationIndex);
+        Assert.Empty(child.Password);
         Assert.Equal(0, keyring.GetCalls + keyring.StoreCalls + keyring.DeleteCalls);
     }
 

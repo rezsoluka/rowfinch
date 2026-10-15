@@ -52,22 +52,24 @@ public sealed class WorkspaceViewModel : ObservableModel, IAsyncDisposable
         catch (Exception error) { SelectedTab?.ReportError(error); }
     }
 
-    public QueryTabViewModel NewTab(string text = "", string? documentName = null)
+    public QueryTabViewModel NewTab(string text = "", string? documentName = null, QueryTabViewModel? connectionSource = null)
     {
         if (!CanManageTabs) throw new InvalidOperationException("The workspace is closing.");
-        var source = SelectedTab;
+        return CreateDocument(connectionSource ?? SelectedTab, text, documentName, isSaved: true);
+    }
+
+    private QueryTabViewModel CreateDocument(QueryTabViewModel? source, string text, string? documentName, bool isSaved)
+    {
         var tab = CreateTab();
-        if (source is not null) tab.CopyConnectionSettingsFrom(source);
-        tab.SetDocument(text, documentName ?? $"Query {nextDocumentNumber}.sql");
+        tab.SetDocument(text, documentName ?? $"Query {nextDocumentNumber}.sql", isSaved);
+        if (source is not null) tab.InitializeConnectionFrom(source);
         return tab;
     }
 
     private void OnDocumentRequested(QueryTabViewModel source, string text, string documentName)
     {
         if (!CanManageTabs || source.IsClosing || !Tabs.Contains(source)) return;
-        var tab = CreateTab();
-        tab.CopyConnectionSettingsFrom(source);
-        tab.SetDocument(text, documentName, isSaved: false);
+        CreateDocument(source, text, documentName, isSaved: false);
     }
 
     private QueryTabViewModel CreateTab()

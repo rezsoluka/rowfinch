@@ -73,8 +73,7 @@ public sealed class SqlQuerySession : IQuerySession, IObjectMetadataSession
                     {
                         if (reader.FieldCount == 0) continue;
                         if (results.Count >= 100) throw new InvalidOperationException("The query returned more than 100 result sets. Narrow the script and run it again.");
-                        var columns = Enumerable.Range(0, reader.FieldCount)
-                            .Select(i => new ResultColumn(reader.GetName(i), reader.GetDataTypeName(i))).ToArray();
+                        var columns = ResultMetadata.ReadColumns(reader);
                         var rows = new List<object?[]>();
                         var truncated = false;
                         while (await reader.ReadAsync(cancellationToken))

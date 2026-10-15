@@ -123,20 +123,35 @@ public partial class QueryTabView : UserControl
         catch (Exception error) { workspace.ReportError(error); return false; }
     }
 
-    private async void OnExportCsv(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    private async void OnExportCsv(object? sender, Avalonia.Interactivity.RoutedEventArgs args) => await ExportRowsAsync(false);
+    private async void OnExportJson(object? sender, Avalonia.Interactivity.RoutedEventArgs args) => await ExportRowsAsync(true);
+
+    private async Task ExportRowsAsync(bool json)
     {
-        if (workspace.IsBusy || workspace.SelectedResult is not { } result) return;
+        if (!workspace.CanExportResult || workspace.SelectedResult is not { } result) return;
         try
         {
-            var file = await Owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = "Export displayed rows", SuggestedFileName = "rowfinch-results.csv", DefaultExtension = "csv", FileTypeChoices = [new FilePickerFileType("CSV") { Patterns = ["*.csv"] }], ShowOverwritePrompt = true });
+            var extension = json ? "json" : "csv";
+            var file = await Owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = "Export displayed rows", SuggestedFileName = $"rowfinch-results.{extension}", DefaultExtension = extension, FileTypeChoices = [new FilePickerFileType(json ? "JSON" : "CSV") { Patterns = [$"*.{extension}"] }], ShowOverwritePrompt = true });
             if (file is null) return;
             await workspace.RunOperationAsync(async token =>
             {
                 await using var output = await file.OpenWriteAsync();
                 output.SetLength(0);
-                await CsvExporter.WriteAsync(result, output, token);
-            }, "Exporting displayed rows…", $"Exported {result.Rows.Count:N0} rows");
+                if (json) await JsonExporter.WriteAsync(result, output, token);
+                else await CsvExporter.WriteAsync(result, output, token);
+            }, "Exporting displayed rows…", $"Exported {result.Rows.Count:N0} displayed rows" + (result.IsTruncated ? " (display limit applied)" : ""));
         }
+        catch (Exception error) { workspace.ReportError(error); }
+    }
+
+    private async void OnGenerateCSharp(object? sender, Avalonia.Interactivity.RoutedEventArgs args) => await ShowGeneratedResultAsync(false);
+    private async void OnGenerateJsonObject(object? sender, Avalonia.Interactivity.RoutedEventArgs args) => await ShowGeneratedResultAsync(true);
+
+    private async Task ShowGeneratedResultAsync(bool json)
+    {
+        if (!workspace.CanExportResult || workspace.SelectedResult is not { } result) return;
+        try { await new ResultModelDialog(result, json).ShowDialog(Owner); }
         catch (Exception error) { workspace.ReportError(error); }
     }
 
