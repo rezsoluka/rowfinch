@@ -223,6 +223,27 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
         ? $"{result.Rows.Count:N0} rows · {result.Columns.Count} columns" + (result.IsTruncated ? " · display limited" : "")
         : "Results appear here after you run a query";
 
+    public async Task<IAssistantDatabaseSession> OpenAssistantDatabaseAsync(bool allowQueries, CancellationToken token)
+    {
+        if (!IsConnected || IsClosing || disposed) throw new InvalidOperationException("Choose a connected database tab first.");
+        var active = liveConnection;
+        IQuerySession candidate = IsDemo ? new DemoQuerySession() : sessionFactory();
+        var target = IsDemo ? "Demo · no database" : active is not null
+            ? $"{active.Profile.Database} · {active.Profile.Server} · {active.Profile.UserName}"
+            : throw new InvalidOperationException("Reconnect the database before enabling assistant access.");
+        var assistant = new AssistantDatabaseSession(candidate, target);
+        try
+        {
+            if (!IsDemo) await candidate.OpenAsync(active!.Profile, active.Password, token);
+            if (allowQueries) await assistant.EnableQueriesAsync(token);
+            token.ThrowIfCancellationRequested();
+            if (!IsConnected || IsClosing || disposed || !IsDemo && !ReferenceEquals(active, liveConnection))
+                throw new InvalidOperationException("The source connection changed. Enable access again for the intended database.");
+            return assistant;
+        }
+        catch { await assistant.DisposeAsync(); throw; }
+    }
+
     public Task ConnectAsync() => ConnectAsync(null);
 
     private Task ConnectAsync(LiveConnection? inherited) => RunOperationAsync(async token =>

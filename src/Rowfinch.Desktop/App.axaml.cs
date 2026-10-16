@@ -12,7 +12,10 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-            desktop.MainWindow = new MainWindow(new WorkspaceViewModel(), desktop.Args?.Contains("--demo") == true);
+        {
+            var demo = desktop.Args?.Contains("--demo") == true;
+            desktop.MainWindow = new MainWindow(new WorkspaceViewModel(), demo, showFirstRun: !demo);
+        }
         base.OnFrameworkInitializationCompleted();
     }
 }

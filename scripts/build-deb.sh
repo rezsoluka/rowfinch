@@ -67,6 +67,7 @@ install -Dm644 "$repo_root/packaging/linux/rowfinch.desktop" "$package_root/usr/
 install -Dm644 "$repo_root/assets/rowfinch.svg" "$package_root/usr/share/icons/hicolor/scalable/apps/rowfinch.svg"
 install -Dm644 "$repo_root/src/Rowfinch.Desktop/Assets/rowfinch.png" "$package_root/usr/share/icons/hicolor/256x256/apps/rowfinch.png"
 gzip -n -c "$repo_root/README.md" > "$doc/README.md.gz"
+gzip -n -c "$repo_root/PRIVACY.md" > "$doc/PRIVACY.md.gz"
 gzip -n -c "$repo_root/packaging/linux/README.md" > "$doc/ubuntu-packaging.md.gz"
 install -m644 "$repo_root/packaging/linux/copyright" "$doc/copyright"
 install -m644 "$repo_root/LICENSE" "$doc/LICENSE"

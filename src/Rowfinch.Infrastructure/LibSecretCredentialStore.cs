@@ -6,7 +6,9 @@ namespace Rowfinch.Infrastructure;
 /// <summary>Ubuntu Secret Service integration. No subprocesses, plaintext files, or password arguments.</summary>
 public sealed class LibSecretCredentialStore : ICredentialStore
 {
-    private const string SchemaName = "org.rowfinch.SqlPassword";
+    private readonly string schemaName;
+    public LibSecretCredentialStore() : this("org.rowfinch.SqlPassword") { }
+    internal LibSecretCredentialStore(string schemaName) => this.schemaName = schemaName;
     private static readonly Lazy<NativeSymbols> Symbols = new(() => new NativeSymbols());
 
     public Task<string?> GetAsync(CredentialIdentity identity, CancellationToken cancellationToken) =>
@@ -72,7 +74,7 @@ public sealed class LibSecretCredentialStore : ICredentialStore
         catch { items.Dispose(); throw; }
     }
 
-    private static async Task<T> RunAsync<T>(Func<nint, nint, CancellationToken, T> action, CancellationToken cancellationToken)
+    private async Task<T> RunAsync<T>(Func<nint, nint, CancellationToken, T> action, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsLinux()) throw new CredentialStoreException(CredentialStoreFailure.Unavailable);
@@ -85,7 +87,7 @@ public sealed class LibSecretCredentialStore : ICredentialStore
             {
                 timeout.Token.ThrowIfCancellationRequested();
                 using var types = Attributes.ForSchema();
-                var schema = Native.secret_schema_newv(SchemaName, 0, types.Handle);
+                var schema = Native.secret_schema_newv(schemaName, 0, types.Handle);
                 if (schema == 0) throw new CredentialStoreException(CredentialStoreFailure.Failed);
                 var cancellable = Native.g_cancellable_new();
                 try

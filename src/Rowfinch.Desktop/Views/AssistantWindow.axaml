@@ -1,0 +1,116 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Rowfinch.Desktop.ViewModels"
+        x:Class="Rowfinch.Desktop.Views.AssistantWindow"
+        Title="Rowfinch · SQL assistant" Width="900" Height="860" MinWidth="650" MinHeight="600" WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Margin="20" RowSpacing="12">
+    <StackPanel Spacing="8">
+      <TextBlock Text="SQL assistant" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock x:Name="SourceLabel" Classes="muted" TextWrapping="Wrap" />
+      <WrapPanel ItemSpacing="8" LineSpacing="6">
+        <Button x:Name="SignInButton" Content="Continue with ChatGPT" Click="OnSignIn" />
+        <Button x:Name="AddAccountButton" Content="Add account" Click="OnAddAccount" />
+        <Button x:Name="SignOutButton" Content="Sign out" Click="OnSignOut" />
+        <Button Content="Manage usage" Click="OnManageUsage" />
+      </WrapPanel>
+      <ComboBox x:Name="Accounts" PlaceholderText="Saved ChatGPT accounts" HorizontalAlignment="Stretch" SelectionChanged="OnAccountChanged">
+        <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}" /></DataTemplate></ComboBox.ItemTemplate>
+      </ComboBox>
+      <TextBlock x:Name="AccountStatus" Classes="muted" TextWrapping="Wrap" />
+    </StackPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,*" ColumnSpacing="10">
+      <TextBlock Text="Model" VerticalAlignment="Center" />
+      <ComboBox x:Name="Models" Grid.Column="1" HorizontalAlignment="Stretch" PlaceholderText="Sign in to load available models">
+        <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayName}" /></DataTemplate></ComboBox.ItemTemplate>
+      </ComboBox>
+    </Grid>
+    <TabControl Grid.Row="2" x:Name="AssistantTabs">
+      <TabItem Header="Chat">
+        <Grid RowDefinitions="Auto,Auto,*,Auto,85" RowSpacing="8" Margin="0,8,0,0">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBlock x:Name="ChatHistorySummary" Text="Ask a question or follow up. Review sharing in Context." Classes="muted" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+              <Button x:Name="SaveChatButton" Content="Save chat" Click="OnSaveChat" Padding="10,5" ToolTip.Tip="Save completed messages, shared data and your draft as a local file." />
+              <Button x:Name="OpenChatButton" Content="Open chat" Click="OnOpenChat" Padding="10,5" />
+              <Button x:Name="NewChatButton" Content="New chat" Click="OnNewChat" Padding="10,5" />
+            </StackPanel>
+          </Grid>
+          <TextBlock x:Name="DatabaseContextLabel" Grid.Row="1" Text="Database access: off. Saved chats contain shared data; protect the files." Classes="muted" TextWrapping="Wrap" />
+          <ScrollViewer x:Name="ChatScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="ChatMessages">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:AssistantChatEntry">
+                  <StackPanel Spacing="8" Margin="0,0,10,16">
+                    <Border Background="#1B302C" CornerRadius="6" Padding="12">
+                      <StackPanel Spacing="6">
+                        <TextBlock Text="You" FontWeight="SemiBold" />
+                        <SelectableTextBlock Text="{Binding Question}" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Border>
+                    <Border Background="#0C1213" CornerRadius="6" Padding="12">
+                      <StackPanel Spacing="6">
+                        <TextBlock Text="{Binding Status}" Classes="muted" FontWeight="SemiBold" TextWrapping="Wrap" />
+                        <SelectableTextBlock Text="{Binding Answer}" TextWrapping="Wrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12" />
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+          <TextBlock Grid.Row="3" Text="Your message" FontWeight="SemiBold" />
+          <TextBox x:Name="QuestionInput" Grid.Row="4" AcceptsReturn="True" TextWrapping="Wrap" TextChanged="OnQuestionChanged"
+                   PlaceholderText="Ask about SQL or follow up on an earlier answer."
+                   ScrollViewer.VerticalScrollBarVisibility="Auto" />
+        </Grid>
+      </TabItem>
+      <TabItem Header="Context">
+        <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="10" Margin="0,8,0,0">
+          <TextBlock Text="Choose what to share with your question. Refresh context captures changes from the source query tab." TextWrapping="Wrap" />
+          <WrapPanel Grid.Row="1" ItemSpacing="12" LineSpacing="5">
+            <CheckBox x:Name="ShareSql" Content="Editor SQL" IsCheckedChanged="OnSharingChanged" />
+            <CheckBox x:Name="ShareSchema" Content="Loaded schema" IsCheckedChanged="OnSharingChanged" />
+            <CheckBox x:Name="ShareRows" Content="First 5 displayed rows" IsCheckedChanged="OnSharingChanged" />
+            <Button x:Name="RefreshContextButton" Content="Refresh context" Click="OnRefreshContext" Padding="8,4" />
+          </WrapPanel>
+          <TextBlock Grid.Row="2" Classes="muted" FontSize="11" TextWrapping="Wrap"
+                     Text="Request preview · this question/context plus SQL-assistance instructions are sent. Enabled database access can share additional schema and approved query results during this question. Earlier completed messages and shared data below are included with follow-ups. Turning a sharing option off does not remove data already in this chat; New chat clears it." />
+          <TextBox x:Name="RequestPreview" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12"
+                   ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          <Expander x:Name="ChatHistoryExpander" Grid.Row="4" Header="Earlier messages and shared data" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <TextBox x:Name="ChatHistoryPreview" Height="180" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          </Expander>
+        </Grid>
+      </TabItem>
+      <TabItem Header="Database access">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*" RowSpacing="10" Margin="0,8,0,0">
+          <TextBlock Text="Choose a connected query tab. Access uses a separate database session. To keep your normal connection, connect another tab with a dedicated SELECT-only account and choose it here." TextWrapping="Wrap" />
+          <ComboBox x:Name="DatabaseConnections" Grid.Row="1" HorizontalAlignment="Stretch" PlaceholderText="Choose a connected query tab">
+            <ComboBox.ItemTemplate><DataTemplate><StackPanel><TextBlock Text="{Binding DocumentName}" /><TextBlock Text="{Binding ConnectionLabel}" FontSize="11" /></StackPanel></DataTemplate></ComboBox.ItemTemplate>
+          </ComboBox>
+          <StackPanel Grid.Row="2">
+            <CheckBox x:Name="AllowSchemaAccess" Content="Allow schema inspection (names and columns shared with OpenAI)" />
+            <CheckBox x:Name="AllowQueryAccess" Content="Allow read-only queries (approve every query before running and sharing)" />
+          </StackPanel>
+          <WrapPanel Grid.Row="3" ItemSpacing="8">
+            <Button x:Name="EnableDatabaseButton" Content="Enable access" Click="OnEnableDatabase" />
+            <Button x:Name="DisableDatabaseButton" Content="Disable access" Click="OnDisableDatabase" />
+          </WrapPanel>
+          <TextBlock x:Name="DatabaseAccessStatus" Grid.Row="4" Text="Access is off. No schema or rows are fetched for the assistant." TextWrapping="Wrap" />
+          <TextBlock Grid.Row="5" Text="Activity · metadata requests, approval decisions and shared results. Kept only in this window." Classes="muted" TextWrapping="Wrap" />
+          <TextBox x:Name="DatabaseActivity" Grid.Row="6" Height="180" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+        </Grid>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+    <TextBlock x:Name="AssistantStatus" Grid.Row="3" Classes="muted" TextWrapping="Wrap" />
+    <WrapPanel Grid.Row="4" ItemSpacing="8" LineSpacing="6" HorizontalAlignment="Right">
+      <Button x:Name="CopyAnswerButton" Content="Copy latest answer" Click="OnCopyAnswer" />
+      <Button x:Name="OpenSqlButton" Content="Open latest SQL in new tab" Click="OnOpenSql" />
+      <Button x:Name="CancelAssistantButton" Content="Cancel" Click="OnCancel" />
+      <Button x:Name="SendAssistantButton" Content="Send" Classes="primary" Click="OnSend" />
+    </WrapPanel>
+  </Grid>
+</Window>

@@ -23,10 +23,14 @@
             <TextBlock Text="YOUR SQL WORKSPACE" Classes="section" FontSize="9" />
           </StackPanel>
         </StackPanel>
-        <TextBlock Grid.Column="1" Text="Azure SQL / SQL Server" Classes="muted" HorizontalAlignment="Center" VerticalAlignment="Center" />
-        <Border Grid.Column="2" Background="#20332E" CornerRadius="6" Padding="12,7" VerticalAlignment="Center" MaxWidth="600">
-          <TextBlock Text="{Binding SelectedTab.ConnectionLabel}" TextTrimming="CharacterEllipsis" Foreground="#ADE1CC" />
-        </Border>
+        <TextBlock Grid.Column="1" Text="Azure SQL / SQL Server" Classes="muted" HorizontalAlignment="Center" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Border Background="#20332E" CornerRadius="6" Padding="12,7" VerticalAlignment="Center" MaxWidth="380">
+            <TextBlock Text="{Binding SelectedTab.ConnectionLabel}" TextTrimming="CharacterEllipsis" Foreground="#ADE1CC" />
+          </Border>
+          <Button x:Name="OpenAssistantButton" Content="Assistant" Click="OnAssistant" IsEnabled="{Binding CanManageTabs}" />
+          <Button x:Name="SafetyPrivacyButton" Content="About / Privacy" Click="OnSafetyPrivacy" />
+        </StackPanel>
       </Grid>
     </Border>
     <Border Grid.Row="1" Background="#111B1C" BorderBrush="#2A3B39" BorderThickness="0,0,0,1" Padding="12,8">

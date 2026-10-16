@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0-beta.1 — 2026-10-15
+
+- Show a one-time safety/privacy notice on first normal launch, with About / Privacy always available.
+- Add an optional SQL assistant using native Sign in with ChatGPT, eligible plan usage, a model picker, streamed answers, and usage controls.
+- Store ChatGPT accounts/tokens in a dedicated desktop-keyring entry, validate OpenID identity and granted scopes, serialize rotating token use, and revoke renewable sessions on sign-out.
+- Share SQL, loaded schema, and a bounded displayed-row sample only when selected, with the exact request visible before Send.
+- Add explicit Save chat/Open chat files to resume completed conversations and drafts, with bounded file validation, private atomic local saves, no persisted credentials/access grants, and fresh database enablement/query approval.
+- Support follow-up conversations with in-memory message/schema/query-result history, a visible transcript and history preview, and New chat. Clear history on account/database changes and exclude failed/cancelled exchanges; retain per-query approvals.
+- Combine assistant questions and answers in a Chat tab, with sharing options and request preview in a separate Context tab.
+- Preserve finalized assistant text and database tool calls from streaming events, including responses whose terminal event contains no output. Avoid duplicate answer text and provide content-free diagnostics for genuinely empty responses.
+- Add opt-in live schema inspection and read-only query tools through independent database sessions. Require restricted SELECT syntax, effective read-only permissions, approval before running and sharing each query, bounded results/timeouts, and visible in-memory activity. Revoke access on disable, source disconnection/closure, account change or window closure.
+- Open completed SQL suggestions as unsaved query tabs for review without executing them. Cancel incomplete answers and close assistants with their source tab.
+
 ## 0.2.0-beta.2 — 2026-10-15
 
 - Automatically connect new query tabs, generated scripts, definitions, and opened SQL files using the source tab's active connection, with independent sessions and in-memory credential reuse.

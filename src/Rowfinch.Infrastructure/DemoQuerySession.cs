@@ -3,7 +3,7 @@ using Rowfinch.Core;
 namespace Rowfinch.Infrastructure;
 
 // An explicit UI preview, not a SQL emulator. It never opens a network connection.
-public sealed class DemoQuerySession : IQuerySession, IObjectMetadataSession
+public sealed class DemoQuerySession : IQuerySession, IObjectMetadataSession, IAssistantReadOnlySession
 {
     public bool IsConnected { get; private set; } = true;
     public Task OpenAsync(ConnectionProfile profile, string? password, CancellationToken cancellationToken)
@@ -58,6 +58,12 @@ public sealed class DemoQuerySession : IQuerySession, IObjectMetadataSession
             "OrderTotal" => "CREATE FUNCTION [dbo].[OrderTotal] (@OrderId int) RETURNS decimal(18,2) AS\nBEGIN\n    RETURN (SELECT [Total] FROM [dbo].[Orders] WHERE [OrderId] = @OrderId);\nEND;",
             _ => throw new ArgumentException("No demo definition for this object.")
         });
+    }
+    public Task ValidateReadOnlyAccessAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.CompletedTask; }
+    public async Task<QueryResultSet> ExecuteReadOnlyAsync(string sql, CancellationToken token)
+    {
+        ReadOnlySqlPolicy.Validate(sql);
+        return (await ExecuteAsync(sql, AssistantDatabaseTools.RowLimit, AssistantDatabaseTools.TimeoutSeconds, null, token)).Results[0];
     }
     public Task<int> GetTransactionCountAsync(CancellationToken cancellationToken) => Task.FromResult(0);
     public ValueTask DisposeAsync() { IsConnected = false; return ValueTask.CompletedTask; }

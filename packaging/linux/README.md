@@ -7,7 +7,7 @@ Rowfinch packages include the .NET runtime, the app, a `rowfinch` command, a des
 From the repository root:
 
 ```bash
-sudo apt install ./artifacts/packages/rowfinch_0.2.0~beta.2_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.3.0~beta.1_amd64.deb
 rowfinch
 ```
 
@@ -21,7 +21,7 @@ sudo apt remove rowfinch
 
 Removal and `apt purge rowfinch` leave profiles and desktop-keyring entries in place. Use **Forget saved password** in the app if you want to remove a remembered password. Profiles remain at `$XDG_CONFIG_HOME/rowfinch/connections.json`, or `~/.config/rowfinch/connections.json` when that variable is unset or relative.
 
-APT resolves native dependencies, including WebKitGTK and libcurl for the bundled Microsoft identity native helper. A graphical desktop and X11/XWayland are needed to open the UI. Entra sign-in also needs a working browser; optional password storage needs an unlocked Secret Service keyring. The package recommends GNOME Keyring and desktop file-picker portals. See [Avalonia Linux deployment](https://docs.avaloniaui.net/docs/platform-specific-guides/linux) and [Microsoft's Ubuntu dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu-decision#dependencies).
+APT resolves native dependencies, including WebKitGTK and libcurl for the bundled Microsoft identity native helper. A graphical desktop and X11/XWayland are needed to open the UI. Entra sign-in also needs a working browser; optional SQL-password storage needs an unlocked Secret Service keyring. The optional ChatGPT assistant requires a working browser and an unlocked Secret Service keyring for account credentials. The package recommends GNOME Keyring and desktop file-picker portals. See [Avalonia Linux deployment](https://docs.avaloniaui.net/docs/platform-specific-guides/linux) and [Microsoft's Ubuntu dependencies](https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu-decision#dependencies).
 
 ## Build
 
@@ -57,9 +57,9 @@ docker build --progress=plain -f packaging/linux/Dockerfile -t rowfinch-package-
 By default it reinstalls the same version. To exercise an actual version upgrade, first build a temporary next-version package, then provide it:
 
 ```bash
-./scripts/build-deb.sh --version 0.2.0-beta.3
+./scripts/build-deb.sh --version 0.3.0-beta.2
 docker build --progress=plain -f packaging/linux/Dockerfile \
-  --build-arg UPGRADE_PACKAGE=rowfinch_0.2.0~beta.3_amd64.deb \
+  --build-arg UPGRADE_PACKAGE=rowfinch_0.3.0~beta.2_amd64.deb \
   -t rowfinch-package-test .
 ```
 
@@ -100,3 +100,15 @@ These checks do not require changing database objects. Use a database/account ap
 9. Connect a tab, then create tabs through New query, Ctrl+T, Generate SELECT/INSERT/UPDATE, Open definition, and Open SQL. Each should connect automatically to the source database without executing its document. Verify that disconnecting or cancelling in one tab leaves the others usable. A tab created from a disconnected source should stay disconnected.
 
 Use demo mode for initial UI/template checks, then verify metadata and generated SQL against your intended Azure schema.
+
+## Assistant and privacy acceptance checks (0.3.0-beta.1)
+
+1. Launch normally with a disposable configuration directory. Confirm the safety/privacy notice appears before profiles load. Close app leaves it unacknowledged; Continue remembers it on the next launch. About / Privacy remains available.
+2. Open Assistant, choose Continue with ChatGPT, and finish browser sign-in with an eligible account. Confirm the plan-usage welcome appears once, the account/model picker loads, and Manage usage opens ChatGPT usage settings. Check identity-only or declined-plan access produces guidance rather than a model request.
+3. Ask a harmless SQL question with all sharing options off. Then opt into SQL, loaded schema, and a small displayed result sample. Verify the preview, change the source editor, and confirm the sent snapshot remains the reviewed one until Refresh context.
+4. Open a completed SQL suggestion in a new tab. Confirm it is unsaved, connected using the source target, and has not run. Cancel another answer and verify that incomplete suggestions cannot be opened with that action.
+5. Try restoring a saved account after restarting, switching accounts, a usage-limit response, and Sign out. Confirm tokens stay in the dedicated keyring entry and an unconfirmed remote revocation is clearly reported. Browser authentication and live inference are manual checks; automated tests use simulated OpenAI responses.
+
+6. Enable schema inspection on a connected tab. Confirm the assistant can discover object/column metadata, including objects not expanded in the browser. Query access must require a dedicated read-only identity and explicit approval of each restricted SELECT before execution and sharing. Decline a query and confirm it does not run.
+7. Ask a follow-up in Chat and review the earlier messages/shared data in Context. Check New chat clears history while keeping explicitly enabled database access; account or active database changes clear the conversation. Disconnecting the selected database tab must revoke assistant access.
+8. Save a completed chat with a draft, close and reopen Assistant, then Open chat. Confirm messages, context and the draft return without sending a request or enabling database access. Send a follow-up with the original saved ChatGPT account. Re-enable the original database explicitly for fresh data; confirm every new query still needs approval and saved calls never rerun. Invalid files must leave the current chat intact. Protect saved files: they are unencrypted and can include shared results.

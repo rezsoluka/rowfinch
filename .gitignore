@@ -24,3 +24,6 @@ appsettings.*.local.json
 # Python helper caches.
 __pycache__/
 *.py[cod]
+
+# Saved assistant conversations can contain private database data.
+*.rowfinch-chat.json

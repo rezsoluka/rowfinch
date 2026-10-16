@@ -5,7 +5,7 @@ using Rowfinch.Core;
 
 namespace Rowfinch.Infrastructure;
 
-public sealed class SqlQuerySession : IQuerySession, IObjectMetadataSession
+public sealed partial class SqlQuerySession : IQuerySession, IObjectMetadataSession, IAssistantReadOnlySession
 {
     private SqlConnection? connection;
     public bool IsConnected => connection?.State == ConnectionState.Open;

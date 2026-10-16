@@ -6,6 +6,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Rowfinch.Desktop.ViewModels;
+using Rowfinch.Core;
+using Rowfinch.Infrastructure;
 
 namespace Rowfinch.Desktop.Views;
 
@@ -13,6 +15,10 @@ public partial class MainWindow : Window
 {
     private readonly WorkspaceViewModel workspace;
     private readonly Dictionary<QueryTabViewModel, QueryTabView> views = [];
+    private readonly Dictionary<QueryTabViewModel, AssistantWindow> assistants = [];
+    private readonly IAssistantClient assistantClient;
+    private readonly bool ownsAssistantClient;
+    private readonly LocalSettingsStore settings;
     private bool allowClose;
     private bool closeWindowPending;
     private bool filePickerOpen;
@@ -20,10 +26,14 @@ public partial class MainWindow : Window
 
     public MainWindow() : this(new WorkspaceViewModel()) { }
 
-    public MainWindow(WorkspaceViewModel workspace, bool startInDemo = false)
+    public MainWindow(WorkspaceViewModel workspace, bool startInDemo = false, bool showFirstRun = false,
+        LocalSettingsStore? settings = null, IAssistantClient? assistantClient = null)
     {
         InitializeComponent();
         this.workspace = workspace;
+        this.settings = settings ?? new LocalSettingsStore();
+        this.assistantClient = assistantClient ?? new ChatGptAssistantClient(this.settings);
+        ownsAssistantClient = assistantClient is null;
         DataContext = workspace;
         workspace.PropertyChanged += OnWorkspaceChanged;
         workspace.Tabs.CollectionChanged += OnTabsChanged;
@@ -31,6 +41,23 @@ public partial class MainWindow : Window
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         Opened += async (_, _) =>
         {
+            if (showFirstRun)
+            {
+                var needsNotice = true;
+                try { needsNotice = (await this.settings.LoadAsync()).SafetyNoticeVersion < SafetyPrivacyDialog.NoticeVersion; }
+                catch (Exception) { /* An unreadable preference must not suppress the safety notice. */ }
+                if (needsNotice)
+                {
+                    if (!await new SafetyPrivacyDialog(firstLaunch: true).ShowDialog<bool>(this))
+                    { await this.workspace.DisposeAsync(); allowClose = true; Close(); return; }
+                    try
+                    {
+                        await this.settings.UpdateAsync(value => value.SafetyNoticeVersion = SafetyPrivacyDialog.NoticeVersion);
+                    }
+                    catch (Exception) { workspace.SelectedTab?.ReportError(new InvalidOperationException("The safety notice preference could not be loaded or saved. You can review Safety and privacy from the header.")); }
+                }
+            }
+            if (!IsVisible) return;
             await workspace.InitializeAsync();
             if (startInDemo && workspace.SelectedTab is { } tab) await tab.StartDemoAsync();
         };
@@ -41,10 +68,26 @@ public partial class MainWindow : Window
             workspace.Tabs.CollectionChanged -= OnTabsChanged;
             foreach (var view in views.Values) DetachView(view);
             views.Clear();
+            foreach (var assistant in assistants.Values.ToArray()) assistant.Close();
+            assistants.Clear();
+            if (ownsAssistantClient) this.assistantClient.Dispose();
         };
     }
 
     public QueryTabView? ActiveQueryView => QueryHost.Content as QueryTabView;
+
+    private async void OnSafetyPrivacy(object? sender, RoutedEventArgs args) => await new SafetyPrivacyDialog().ShowDialog<bool>(this);
+    private void OnAssistant(object? sender, RoutedEventArgs args)
+    {
+        if (!workspace.CanManageTabs || workspace.SelectedTab is not { } tab) return;
+        if (assistants.TryGetValue(tab, out var existing)) { existing.Activate(); return; }
+        // Keep one account/context surface per workspace. Opening another source starts fresh.
+        foreach (var previous in assistants.Values.ToArray()) previous.Close();
+        var assistant = new AssistantWindow(assistantClient, workspace, tab, settings);
+        assistants.Add(tab, assistant);
+        assistant.Closed += (_, _) => assistants.Remove(tab);
+        assistant.Show(this);
+    }
 
     private QueryTabView GetView(QueryTabViewModel tab)
     {
@@ -69,6 +112,7 @@ public partial class MainWindow : Window
     {
         foreach (var tab in views.Keys.Where(tab => !workspace.Tabs.Contains(tab)).ToArray())
         {
+            if (assistants.Remove(tab, out var assistant)) assistant.Close();
             DetachView(views[tab]);
             views.Remove(tab);
         }
