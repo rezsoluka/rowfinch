@@ -252,7 +252,13 @@ public sealed class AssistantUiTests
         Click(newApproval, newApproval.GetVisualDescendants().OfType<Button>().Single(control => control.Name == "DeclineQueryButton"));
         await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
         Assert.Equal(2, assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Count);
-        Assert.Equal(2, client.LastHistory.Count);
+        Assert.Equal(4, client.LastHistory.Count);
+        var openSql = assistant.FindControl<Button>("OpenSqlButton")!;
+        Assert.True(openSql.IsEnabled); // The answer has no SQL fence; recover the actual database query.
+        Click(assistant, openSql);
+        var openedQuery = workspace.SelectedTab!; await openedQuery.ConnectionReady;
+        Assert.Equal("SELECT TOP (10) * FROM dbo.Customers;", openedQuery.Sql);
+        Assert.Empty(openedQuery.Results); openedQuery.MarkSaved(openedQuery.DocumentName);
         Click(assistant, assistant.FindControl<Button>("NewChatButton")!);
         Assert.Empty(assistant.FindControl<ItemsControl>("ChatMessages")!.Items);
         Assert.True(assistant.FindControl<Button>("DisableDatabaseButton")!.IsEnabled);
@@ -442,6 +448,109 @@ public sealed class AssistantUiTests
         assistant.Close(); window.Close(); Directory.Delete(directory, true);
     }
 
+    [AvaloniaFact]
+    public async Task ConnectionNotesLoadInNewChatsAppearInPreviewAndNeverLeakToAnotherTarget()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "rowfinch-notes-ui-" + Guid.NewGuid().ToString("N"));
+        var settings = new LocalSettingsStore(Path.Combine(directory, "settings.json"));
+        await settings.UpdateAsync(value => value.ChatGptWelcomeShown = true);
+        using var client = new FakeAssistant(); client.Release.TrySetResult();
+        await using var workspace = new WorkspaceViewModel(new Profiles());
+        var window = new MainWindow(workspace, settings: settings, assistantClient: client); window.Show();
+        var source = workspace.SelectedTab!;
+        source.Server = "orders.example.test"; source.Database = "Orders"; source.UserName = "reader";
+        source.Password = "not-a-note-or-saved-secret";
+        Click(window, window.FindControl<Button>("OpenAssistantButton")!);
+        await client.ModelsLoaded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var assistant = Assert.Single(window.OwnedWindows.OfType<AssistantWindow>());
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 1;
+        var notes = "PO is the order header; POitems contains PO lines. SystemId defines the product series.";
+        assistant.FindControl<TextBox>("ConnectionNotesInput")!.Text = notes;
+        Click(assistant, assistant.FindControl<Button>("SaveConnectionNotesButton")!);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SaveConnectionNotesButton")!.IsEnabled);
+        Assert.Null(client.LastRequest);
+        Assert.DoesNotContain("not-a-note-or-saved-secret", await File.ReadAllTextAsync(Path.Combine(directory, "assistant-contexts.json"), TestContext.Current.CancellationToken));
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 0;
+        assistant.FindControl<TextBox>("QuestionInput")!.Text = "Find orders for series 155";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Contains(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        Click(assistant, assistant.FindControl<Button>("SendAssistantButton")!);
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Contains(notes, client.LastRequest);
+        Click(assistant, assistant.FindControl<Button>("NewChatButton")!);
+        Assert.Equal(notes, assistant.FindControl<TextBox>("ConnectionNotesInput")!.Text);
+        assistant.FindControl<TextBox>("QuestionInput")!.Text = "Another question";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Contains(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        assistant.Close();
+        Click(window, window.FindControl<Button>("OpenAssistantButton")!);
+        await WaitUntilAsync(() => window.OwnedWindows.OfType<AssistantWindow>().SingleOrDefault()?.FindControl<TextBox>("ConnectionNotesInput")!.Text == notes);
+        assistant = Assert.Single(window.OwnedWindows.OfType<AssistantWindow>());
+        assistant.FindControl<TextBox>("QuestionInput")!.Text = "After restarting the assistant";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.Contains(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 1;
+        Click(assistant, assistant.FindControl<CheckBox>("ShareConnectionNotes")!);
+        Assert.DoesNotContain(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        source.Database = "AnotherDatabase";
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SaveConnectionNotesButton")!.IsEnabled);
+        Assert.Empty(assistant.FindControl<TextBox>("ConnectionNotesInput")!.Text!);
+        Assert.DoesNotContain(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        source.Database = "Orders";
+        await WaitUntilAsync(() => assistant.FindControl<TextBox>("ConnectionNotesInput")!.Text == notes);
+        Assert.Contains(notes, assistant.FindControl<TextBox>("RequestPreview")!.Text);
+        Assert.False(assistant.FindControl<Button>("DisableDatabaseButton")!.IsEnabled);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_NOTES_SCREENSHOT") is { Length: > 0 } screenshot)
+        {
+            assistant.UpdateLayout(); using var frame = assistant.CaptureRenderedFrame(); Assert.NotNull(frame);
+            frame.Save(screenshot, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        assistant.Close(); window.Close(); Directory.Delete(directory, true);
+    }
+
+    [AvaloniaFact]
+    public async Task RejectedQueryRemainsReviewableEvenIfTheAssistantFailsAfterReceivingFeedback()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "rowfinch-rejected-query-ui-" + Guid.NewGuid().ToString("N"));
+        var settings = new LocalSettingsStore(Path.Combine(directory, "settings.json"));
+        await settings.UpdateAsync(value => value.ChatGptWelcomeShown = true);
+        using var client = new FakeAssistant { QuerySql = "SELECT * INTO dbo.Copy FROM dbo.Customers;", FailAfterQuery = true };
+        await using var workspace = new WorkspaceViewModel(new Profiles());
+        var window = new MainWindow(workspace, settings: settings, assistantClient: client); window.Show();
+        var source = workspace.SelectedTab!; await source.StartDemoAsync();
+        Click(window, window.FindControl<Button>("OpenAssistantButton")!);
+        await client.ModelsLoaded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var assistant = Assert.Single(window.OwnedWindows.OfType<AssistantWindow>());
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 2;
+        Click(assistant, assistant.FindControl<CheckBox>("AllowQueryAccess")!);
+        Click(assistant, assistant.FindControl<Button>("EnableDatabaseButton")!);
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 0;
+        assistant.FindControl<TextBox>("QuestionInput")!.Text = "This week's totals";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Click(assistant, assistant.FindControl<Button>("SendAssistantButton")!);
+        await client.DatabaseCompleted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("OpenSqlButton")!.IsEnabled);
+        Assert.Empty(assistant.OwnedWindows.OfType<AssistantQueryApprovalDialog>());
+        Assert.Contains("sql_policy_rejected", client.DatabaseResult);
+        Assert.False(assistant.FindControl<Button>("SaveChatButton")!.IsEnabled);
+        Assert.Contains("failed", Assert.Single(assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>()).Status);
+        Click(assistant, assistant.FindControl<Button>("OpenSqlButton")!);
+        var review = workspace.SelectedTab!; await review.ConnectionReady;
+        Assert.Equal(client.QuerySql, review.Sql); Assert.True(review.IsDirty); Assert.Empty(review.Results);
+        review.MarkSaved(review.DocumentName);
+        Click(assistant, assistant.FindControl<Button>("NewChatButton")!);
+        Assert.False(assistant.FindControl<Button>("OpenSqlButton")!.IsEnabled);
+        source.MarkSaved(source.DocumentName); assistant.Close(); window.Close(); Directory.Delete(directory, true);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        while (!predicate()) await Task.Delay(10, timeout.Token);
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+    }
+
     private static void Click(Window window, Control control)
     {
         window.UpdateLayout();
@@ -470,10 +579,21 @@ public sealed class AssistantUiTests
             using var turn = conversation.Begin(Account!.ClientId, database?.ConversationScope, database?.AllowSchema == true, database?.AllowQueries == true);
             LastHistory = turn.Input;
             var answer = database is null ? await AskAsync(model, request, progress, token) : await AskWithDatabaseAsync(model, request, database, progress, token);
-            turn.Commit(turn.Input.Cast<object>().Concat(new object[] { new { role = "user", content = request }, new { role = "assistant", content = answer } }));
+            var input = turn.Input.Cast<object>().ToList();
+            input.Add(new { role = "user", content = request });
+            if (database is not null)
+            {
+                var callId = "call_" + Guid.NewGuid().ToString("N");
+                input.Add(new { type = "function_call", name = "query", @namespace = "rowfinch", call_id = callId, arguments = "{\"sql\":\"SELECT TOP (10) * FROM dbo.Customers;\"}" });
+                input.Add(new { type = "function_call_output", call_id = callId, output = DatabaseResult });
+            }
+            input.Add(new { role = "assistant", content = answer });
+            turn.Commit(input);
             return answer;
         }
         public string? DatabaseResult { get; private set; }
+        public string QuerySql { get; init; } = "SELECT TOP (10) * FROM dbo.Customers;";
+        public bool FailAfterQuery { get; init; }
         public TaskCompletionSource QueryRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource DatabaseCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task InitializeAsync(CancellationToken token) => Task.CompletedTask;
@@ -495,8 +615,10 @@ public sealed class AssistantUiTests
             LastRequest = request; AskStarted.TrySetResult();
             if (database.AllowSchema) await database.InvokeAsync("describe_object", "{\"schema\":\"dbo\",\"name\":\"Customers\"}", token);
             QueryRequested.TrySetResult();
-            DatabaseResult = await database.InvokeAsync("query", "{\"sql\":\"SELECT TOP (10) * FROM dbo.Customers;\",\"reason\":\"Get a small sample of customers.\"}", token);
-            DatabaseCompleted.TrySetResult(); return "Database response received.";
+            DatabaseResult = await database.InvokeAsync("query", System.Text.Json.JsonSerializer.Serialize(new { sql = QuerySql, reason = "Get a small sample of customers." }), token);
+            DatabaseCompleted.TrySetResult();
+            if (FailAfterQuery) throw new InvalidOperationException("The fake assistant failed after receiving policy feedback.");
+            return "Database response received.";
         }
         public void Dispose() { }
     }

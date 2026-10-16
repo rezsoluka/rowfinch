@@ -17,6 +17,9 @@ public interface IAssistantDatabaseSession : IAsyncDisposable
     Task<string> QueryAsync(string sql, CancellationToken token);
 }
 
+/// <summary>A local SQL grammar rejection, before any database execution.</summary>
+public sealed class AssistantSqlPolicyException(string message) : InvalidOperationException(message);
+
 public sealed record AssistantQueryApproval(string Target, string Sql, string Reason);
 
 /// <summary>All model requests pass through this capability and approval boundary.</summary>
@@ -38,6 +41,13 @@ public sealed class AssistantDatabaseTools(IAssistantDatabaseSession database, b
     {
         try { return await InvokeCoreAsync(name, arguments, token); }
         catch (OperationCanceledException) { activity?.Invoke("Database request cancelled."); throw; }
+        catch (AssistantSqlPolicyException error)
+        {
+            token.ThrowIfCancellationRequested();
+            activity?.Invoke("Query blocked by SQL policy. No SQL was executed: " + error.Message);
+            return JsonSerializer.Serialize(new { status = "rejected", code = "sql_policy_rejected", executed = false,
+                message = error.Message.Length <= 2000 ? error.Message : error.Message[..2000] });
+        }
         catch (Exception error) { activity?.Invoke("Database request failed: " + error.Message); throw; }
     }
 

@@ -15,6 +15,11 @@ public sealed class AssistantDatabaseTests
     [InlineData("SELECT CAST(42 AS decimal(10,2)), COALESCE(NULL, 'x'), CASE WHEN 1 = 1 THEN 1 ELSE 0 END;")]
     [InlineData("SELECT ROW_NUMBER() OVER (ORDER BY CustomerId) AS n FROM dbo.Customers;")]
     [InlineData("SELECT a.CustomerId FROM dbo.Customers a WHERE EXISTS (SELECT 1 FROM dbo.Orders b WHERE b.CustomerId=a.CustomerId);")]
+    [InlineData("SELECT DATEADD(week, DATEDIFF(week, 0, GETDATE()), 0);")]
+    [InlineData("SELECT DATETRUNC(iso_week, SYSUTCDATETIME()), DATEPART(weekday, GETDATE()), @@DATEFIRST;")]
+    [InlineData("SELECT TRY_CAST(qty AS decimal(18,2)), TRY_CONVERT(decimal(18,2), DiscountPrice) FROM dbo.POitems;")]
+    [InlineData("SELECT SUM(poi.qty), SUM(poi.DiscountPrice * poi.qty) FROM dbo.PO po JOIN dbo.POitems poi ON po.po_id = poi.po_id WHERE po.[date] >= DATEADD(day, -(DATEDIFF(day, '19000101', CAST(GETDATE() AS date)) % 7), CAST(GETDATE() AS date)) AND po.[date] < DATEADD(day, 7 - DATEDIFF(day, '19000101', CAST(GETDATE() AS date)) % 7, CAST(GETDATE() AS date));")]
+    [InlineData("WITH bounds AS (SELECT DATEADD(day, -(DATEPART(weekday, GETDATE()) + @@DATEFIRST - 2) % 7, CAST(GETDATE() AS date)) AS StartDate) SELECT SUM(qty) FROM dbo.POitems CROSS JOIN bounds;")]
     public void OrdinarySelectsAndCtesAreAllowed(string sql) => ReadOnlySqlPolicy.Validate(sql);
 
     [Theory]
@@ -38,8 +43,37 @@ public sealed class AssistantDatabaseTests
     [InlineData("SELECT 1;\nGO\nSELECT 2;")]
     [InlineData("SELECT GET_FILESTREAM_TRANSACTION_CONTEXT();")]
     [InlineData("SELECT * FROM dbo.Customers c CROSS APPLY OPENJSON(c.Name);")]
+    [InlineData("SELECT @@SERVERNAME;")]
+    [InlineData("SELECT @@ROWCOUNT;")]
+    [InlineData("SELECT DATEADD(day, 1, dbo.CustomFunction());")]
+    [InlineData("SELECT TRY_CAST(dbo.CustomFunction() AS int);")]
+    [InlineData("SELECT DATEPART(week, GETDATE()) FROM otherdb.dbo.PO;")]
+    [InlineData("SELECT DATEADD(day, 1, GETDATE()) INTO dbo.Copy;")]
+    [InlineData("DECLARE @start date = GETDATE(); SELECT SUM(qty) FROM dbo.POitems;")]
     public void WritesAndUnsupportedSyntaxAreRejected(string sql)
         => Assert.ThrowsAny<Exception>(() => ReadOnlySqlPolicy.Validate(sql));
+
+    [Fact]
+    public async Task SqlPolicyRejectionsReturnFeedbackWithoutApprovalOrExecutionAndSafeCorrectionsRequireApproval()
+    {
+        await using var database = new Database { CanQuery = true };
+        var approvals = 0; var activity = new List<string>();
+        var tools = new AssistantDatabaseTools(database, false, (request, _) =>
+        {
+            ReadOnlySqlPolicy.Validate(request.Sql); approvals++; return Task.FromResult(true);
+        }, activity.Add);
+        var rejected = await tools.InvokeAsync("query", JsonSerializer.Serialize(new { sql = "DECLARE @week date = GETDATE(); SELECT @week;", reason = "Current week" }), TestContext.Current.CancellationToken);
+        using var result = JsonDocument.Parse(rejected);
+        Assert.Equal("sql_policy_rejected", result.RootElement.GetProperty("code").GetString());
+        Assert.False(result.RootElement.GetProperty("executed").GetBoolean());
+        Assert.Equal(0, approvals); Assert.Equal(0, database.Queries);
+        Assert.Contains(activity, entry => entry.Contains("No SQL was executed"));
+        await tools.InvokeAsync("query", JsonSerializer.Serialize(new { sql = "SELECT DATEADD(week, DATEDIFF(week, 0, GETDATE()), 0);", reason = "Current week using one SELECT" }), TestContext.Current.CancellationToken);
+        Assert.Equal(1, approvals); Assert.Equal(1, database.Queries);
+        tools = new(database, false, (_, _) => throw new InvalidOperationException("Approval service failed."));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => tools.InvokeAsync("query", "{\"sql\":\"SELECT 1;\",\"reason\":\"Test\"}", TestContext.Current.CancellationToken));
+        Assert.Equal(1, database.Queries);
+    }
 
     [Fact]
     public async Task ToolsRespectCapabilitiesAndNeverExecuteDeclinedQueries()

@@ -23,13 +23,13 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
     {
         Validate();
         var bytes = JsonSerializer.SerializeToUtf8Bytes(this, Options);
-        if (bytes.Length > MaximumFileBytes) throw Invalid();
+        if (bytes.Length > MaximumFileBytes) throw Invalid("The chat file exceeds the 16 MB size limit.");
         return bytes;
     }
 
     public static SavedAssistantChat Deserialize(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.Length > MaximumFileBytes) throw Invalid();
+        if (bytes.Length > MaximumFileBytes) throw Invalid("The chat file exceeds the 16 MB size limit.");
         try
         {
             using var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
@@ -59,7 +59,8 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
             var type = Text(item, "type");
             if (Text(item, "role") is { } role)
             {
-                Fields(item, "type", "id", "status", "role", "content");
+                Fields(item, "type", "id", "status", "role", "content", "phase");
+                if (Text(item, "phase") is { } phase && (role != "assistant" || phase is not ("commentary" or "final_answer"))) throw Invalid("Unsupported message phase.");
                 if (role is not ("user" or "assistant") || type is not (null or "message")) throw Invalid();
                 if (role == "user")
                 {
@@ -86,7 +87,16 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
             else if (type == "reasoning")
             {
                 if (users == 0) throw Invalid();
-                Fields(item, "type", "id", "status", "summary", "encrypted_content");
+                Fields(item, "type", "id", "status", "summary", "encrypted_content", "content");
+                if (item.TryGetProperty("content", out var reasoning) && reasoning.ValueKind != JsonValueKind.Null)
+                {
+                    if (reasoning.ValueKind != JsonValueKind.Array) throw Invalid("Unsupported reasoning content.");
+                    foreach (var part in reasoning.EnumerateArray())
+                    {
+                        Fields(part, "type", "text"); Required(part, "text");
+                        if (Text(part, "type") != "reasoning_text") throw Invalid("Unsupported reasoning content.");
+                    }
+                }
                 if (item.TryGetProperty("summary", out var summary))
                 {
                     if (summary.ValueKind != JsonValueKind.Array) throw Invalid();
@@ -125,7 +135,7 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var field in item.EnumerateObject())
             {
-                if (!seen.Add(field.Name)) throw Invalid();
+                if (!seen.Add(field.Name)) throw Invalid("Duplicate JSON fields.");
                 CheckDuplicateFields(field.Value);
             }
         }
@@ -139,12 +149,12 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var field in item.EnumerateObject())
         {
-            if (!names.Contains(field.Name, StringComparer.Ordinal) || !seen.Add(field.Name)) throw Invalid();
-            if (field.Name is "type" or "id" or "status" or "role" or "name" or "namespace" or "call_id" or "arguments" or "output" or "text" or "refusal" or "encrypted_content")
+            if (!names.Contains(field.Name, StringComparer.Ordinal) || !seen.Add(field.Name)) throw Invalid("Unsupported or duplicate response-item fields. Update Rowfinch if this persists.");
+            if (field.Name is "type" or "id" or "status" or "role" or "name" or "namespace" or "call_id" or "arguments" or "output" or "text" or "refusal" or "encrypted_content" or "phase")
                 if (field.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) throw Invalid();
         }
     }
     private static string? Text(JsonElement item, string name) => item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static string Required(JsonElement item, string name) => Text(item, name) ?? throw Invalid();
-    private static InvalidDataException Invalid() => new("This is not a supported Rowfinch chat file, or it exceeds the chat size limit.");
+    private static InvalidDataException Invalid(string? reason = null) => new("The chat data could not be validated. " + (reason ?? "The format is unsupported, incomplete, or exceeds the chat limits."));
 }

@@ -1,4 +1,5 @@
 using Rowfinch.Core;
+using Rowfinch.Infrastructure;
 using Rowfinch.Desktop.ViewModels;
 using Xunit;
 
@@ -6,6 +7,23 @@ namespace Rowfinch.Tests;
 
 public sealed class QueryTabsTests
 {
+    [Fact]
+    public async Task AssistantNotesUseTheLiveTargetAndInheritedTabsShareThatContext()
+    {
+        await using var workspace = new WorkspaceViewModel(new MemoryStore(), () => new Session("notes"));
+        var source = workspace.SelectedTab!;
+        Assert.Null(source.AssistantContextConnection);
+        Configure(source, "orders"); await source.ConnectAsync();
+        var connected = source.AssistantContextConnection!;
+        source.Database = "edited-disconnected-target";
+        Assert.Equal(connected, source.AssistantContextConnection);
+        var second = workspace.NewTab(); await second.ConnectionReady;
+        Assert.Equal(AssistantConnectionContextStore.Key(connected), AssistantConnectionContextStore.Key(second.AssistantContextConnection!));
+        await source.DisconnectAsync();
+        Assert.NotEqual(AssistantConnectionContextStore.Key(connected), AssistantConnectionContextStore.Key(source.AssistantContextConnection!));
+        await source.StartDemoAsync(); Assert.Null(source.AssistantContextConnection);
+    }
+
     [Fact]
     public async Task DisconnectedSourceOnlyCopiesSettingsAndLeavesPasswordBlank()
     {

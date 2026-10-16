@@ -22,6 +22,27 @@ public sealed class AssistantChatFileTests
         return chat.Save([new("Find orders", "Found orders")], "db · server · readonly", "model", "Follow-up draft");
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[{\"type\":\"reasoning_text\",\"text\":\"opaque reasoning text\"}]")]
+    public void ProviderPhasesAndReasoningContentRoundTripWithoutRelaxingRoles(string reasoningContent)
+    {
+        using var reasoning = JsonDocument.Parse("{\"type\":\"reasoning\",\"id\":\"rs_real\",\"summary\":[],\"encrypted_content\":\"opaque\",\"content\":" + reasoningContent + "}");
+        var chat = new AssistantConversation();
+        using (var turn = chat.Begin("account")) turn.Commit([
+            new { role = "user", content = "Explain orders" }, reasoning.RootElement,
+            new { type = "message", id = "msg_real", role = "assistant", phase = "final_answer", status = "completed", content = new[] { new { type = "output_text", text = "Order explanation", annotations = Array.Empty<object>(), logprobs = Array.Empty<object>() } } }
+        ]);
+        var saved = SavedAssistantChat.Deserialize(chat.Save([new("Explain orders", "Order explanation")], null, "model", "").Serialize());
+        var restored = new AssistantConversation(); restored.Restore(saved);
+        using var next = restored.Begin("account");
+        Assert.Equal("final_answer", next.Input.Last().GetProperty("phase").GetString());
+        Assert.True(next.Input[1].TryGetProperty("content", out _));
+        Assert.DoesNotContain("opaque reasoning text", restored.Preview());
+        var json = Encoding.UTF8.GetString(saved.Serialize());
+        Assert.Throws<InvalidDataException>(() => SavedAssistantChat.Deserialize(Encoding.UTF8.GetBytes(json.Replace("final_answer", "invalid_phase"))));
+    }
+
     [Fact]
     public async Task FileRoundTripRetainsContextButRequiresExplicitAccessAndTheOriginalAccount()
     {

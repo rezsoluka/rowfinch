@@ -97,6 +97,18 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     public ActionCommand NewProfileCommand { get; }
     public ActionCommand CancelCommand { get; }
     public bool IsConnected => session?.IsConnected == true;
+    // Actual connected target takes precedence over editable or saved profile fields.
+    public ConnectionProfile? AssistantContextConnection
+    {
+        get
+        {
+            if (IsDemo) return null;
+            var profile = IsConnected ? liveConnection?.Profile : CurrentProfile();
+            if (profile is null) return null;
+            try { profile.Validate(); return profile; }
+            catch (ArgumentException) { return null; }
+        }
+    }
     public Task ConnectionReady { get; private set; } = Task.CompletedTask;
     public bool CanExecute => IsConnected && !IsBusy && !IsClosing;
     public bool CanEditConnection => !IsBusy && !IsConnected && !IsClosing;

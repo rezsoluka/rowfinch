@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-beta.2 — 2026-10-16
+
+- Fix false rejection of date-part expressions in weekly/date-filtered SELECTs, TRY_CAST/TRY_CONVERT, and read-only @@DATEFIRST. Preserve write, local-variable, cross-database and unknown-function restrictions.
+- Return SQL-policy rejections as bounded tool feedback so the assistant can revise its query within the existing call limit. Keep fresh approval for each accepted query and expose complete requested SQL for manual review even after a failed answer.
+- Save reusable connection notes in Context, scoped to server/database/user/authentication. Reload them for future chats, include checked notes in the request preview, and preserve them when starting a new chat.
+- Accept and preserve supported assistant message phases and reasoning content when saving/reopening chats. Replace the misleading file/size-only error with a validation explanation.
+- Allow Open latest SQL in new tab to use the most recent database-tool query when the answer contains no SQL code block. Continue opening unsaved drafts without executing them.
+
 ## 0.3.0-beta.1 — 2026-10-15
 
 - Show a one-time safety/privacy notice on first normal launch, with About / Privacy always available.

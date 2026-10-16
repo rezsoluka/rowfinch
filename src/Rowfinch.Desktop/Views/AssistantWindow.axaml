@@ -65,23 +65,39 @@
         </Grid>
       </TabItem>
       <TabItem Header="Context">
-        <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="10" Margin="0,8,0,0">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="10" Margin="0,8,8,0">
           <TextBlock Text="Choose what to share with your question. Refresh context captures changes from the source query tab." TextWrapping="Wrap" />
-          <WrapPanel Grid.Row="1" ItemSpacing="12" LineSpacing="5">
+          <Expander Header="Connection notes" IsExpanded="True" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <StackPanel Spacing="8">
+              <TextBlock x:Name="ConnectionNotesTarget" Classes="muted" TextWrapping="Wrap" />
+              <TextBox x:Name="ConnectionNotesInput" Height="110" MaxLength="20000" AcceptsReturn="True" TextWrapping="Wrap" TextChanged="OnConnectionNotesChanged"
+                       PlaceholderText="Describe tables, relationships and business terms for this connection."
+                       ScrollViewer.VerticalScrollBarVisibility="Auto" />
+              <WrapPanel ItemSpacing="12" LineSpacing="6">
+                <CheckBox x:Name="ShareConnectionNotes" Content="Include connection notes" IsCheckedChanged="OnNotesSharingChanged" />
+                <Button x:Name="SaveConnectionNotesButton" Content="Save notes" Click="OnSaveConnectionNotes" />
+              </WrapPanel>
+              <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap" Text="Saved locally, unencrypted. Checked notes are included in the preview and shared when you choose Send." />
+              <TextBlock x:Name="ConnectionNotesStatus" Classes="muted" FontSize="11" TextWrapping="Wrap" Text="Save notes to reuse them in future chats." />
+            </StackPanel>
+          </Expander>
+          <WrapPanel ItemSpacing="12" LineSpacing="5">
             <CheckBox x:Name="ShareSql" Content="Editor SQL" IsCheckedChanged="OnSharingChanged" />
             <CheckBox x:Name="ShareSchema" Content="Loaded schema" IsCheckedChanged="OnSharingChanged" />
             <CheckBox x:Name="ShareRows" Content="First 5 displayed rows" IsCheckedChanged="OnSharingChanged" />
             <Button x:Name="RefreshContextButton" Content="Refresh context" Click="OnRefreshContext" Padding="8,4" />
           </WrapPanel>
-          <TextBlock Grid.Row="2" Classes="muted" FontSize="11" TextWrapping="Wrap"
-                     Text="Request preview · this question/context plus SQL-assistance instructions are sent. Enabled database access can share additional schema and approved query results during this question. Earlier completed messages and shared data below are included with follow-ups. Turning a sharing option off does not remove data already in this chat; New chat clears it." />
-          <TextBox x:Name="RequestPreview" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12"
+          <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap"
+                     Text="Request preview · this question/context plus SQL-assistance instructions are sent. Enabled database access can share additional schema and approved query results during this question. Earlier completed messages and shared data below are included with follow-ups. Turning a sharing option off does not remove data already in this chat; New chat clears chat history and keeps saved connection notes." />
+          <TextBox x:Name="RequestPreview" Height="180" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12"
                    ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
-          <Expander x:Name="ChatHistoryExpander" Grid.Row="4" Header="Earlier messages and shared data" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+          <Expander x:Name="ChatHistoryExpander" Header="Earlier messages and shared data" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
             <TextBox x:Name="ChatHistoryPreview" Height="180" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12"
                      ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
           </Expander>
-        </Grid>
+        </StackPanel>
+        </ScrollViewer>
       </TabItem>
       <TabItem Header="Database access">
         <ScrollViewer VerticalScrollBarVisibility="Auto">

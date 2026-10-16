@@ -7,7 +7,7 @@ Rowfinch packages include the .NET runtime, the app, a `rowfinch` command, a des
 From the repository root:
 
 ```bash
-sudo apt install ./artifacts/packages/rowfinch_0.3.0~beta.1_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.3.0~beta.2_amd64.deb
 rowfinch
 ```
 
@@ -57,9 +57,9 @@ docker build --progress=plain -f packaging/linux/Dockerfile -t rowfinch-package-
 By default it reinstalls the same version. To exercise an actual version upgrade, first build a temporary next-version package, then provide it:
 
 ```bash
-./scripts/build-deb.sh --version 0.3.0-beta.2
+./scripts/build-deb.sh --version 0.3.0-beta.3
 docker build --progress=plain -f packaging/linux/Dockerfile \
-  --build-arg UPGRADE_PACKAGE=rowfinch_0.3.0~beta.2_amd64.deb \
+  --build-arg UPGRADE_PACKAGE=rowfinch_0.3.0~beta.3_amd64.deb \
   -t rowfinch-package-test .
 ```
 
@@ -112,3 +112,11 @@ Use demo mode for initial UI/template checks, then verify metadata and generated
 6. Enable schema inspection on a connected tab. Confirm the assistant can discover object/column metadata, including objects not expanded in the browser. Query access must require a dedicated read-only identity and explicit approval of each restricted SELECT before execution and sharing. Decline a query and confirm it does not run.
 7. Ask a follow-up in Chat and review the earlier messages/shared data in Context. Check New chat clears history while keeping explicitly enabled database access; account or active database changes clear the conversation. Disconnecting the selected database tab must revoke assistant access.
 8. Save a completed chat with a draft, close and reopen Assistant, then Open chat. Confirm messages, context and the draft return without sending a request or enabling database access. Send a follow-up with the original saved ChatGPT account. Re-enable the original database explicitly for fresh data; confirm every new query still needs approval and saved calls never rerun. Invalid files must leave the current chat intact. Protect saved files: they are unencrypted and can include shared results.
+
+## Connection notes and chat fixes (0.3.0-beta.2)
+
+1. In Context, save notes for a real or configured connection. Confirm they appear in the preview, survive New chat and reopening Assistant, and return for inherited query tabs. Switch targets or authentication and verify the previous notes are absent. Uncheck Include connection notes and verify they are omitted from new requests. Clear and save notes to remove them. Demo has no persistent notes.
+2. Complete a live assistant exchange, Save chat, then Open chat. Verify ordinary assistant message phases and reasoning metadata no longer cause a format/size error. Older valid chat files should still open; invalid data must leave the current chat intact.
+3. Ask the assistant to run an approved read-only query and summarize it without a SQL code block. Open latest SQL in new tab should open the query used, without running it. Check that New chat clears the available SQL and incomplete answers cannot supply partial suggestions.
+
+4. Ask for current-week units/sales. Verify date-part expressions and safe numeric conversions reach query approval. Unsupported DECLARE/local-variable forms should return policy feedback to the assistant for revision without executing SQL. Confirm revised queries still require approval, declining prevents further queries, and a complete rejected query can be opened for manual review even if the answer fails.

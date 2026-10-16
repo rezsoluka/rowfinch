@@ -75,6 +75,25 @@ public sealed class AssistantConversation
         lock (sync) { history = []; restored = false; account = null; database = null; schema = queries = false; exchanges = length = 0; active = null; revision++; }
     }
 
+    public string LatestQuerySql()
+    {
+        lock (sync)
+        {
+            foreach (var item in history.Reverse())
+            {
+                if (String(item, "type") != "function_call" || String(item, "name") is not ("query" or "rowfinch.query") ||
+                    String(item, "namespace") is not (null or "rowfinch") || String(item, "arguments") is not { } arguments) continue;
+                try
+                {
+                    using var json = JsonDocument.Parse(arguments);
+                    if (String(json.RootElement, "sql") is { Length: > 0 } sql) return sql;
+                }
+                catch (JsonException) { } // Ignore a malformed historic request; never execute history.
+            }
+            return "";
+        }
+    }
+
     public string Preview()
     {
         lock (sync)

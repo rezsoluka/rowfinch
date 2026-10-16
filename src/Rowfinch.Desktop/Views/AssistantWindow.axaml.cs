@@ -21,6 +21,14 @@ public partial class AssistantWindow : Window
     private readonly LocalSettingsStore settings;
     private CancellationTokenSource? operation;
     private readonly CancellationTokenSource lifetime = new();
+    private readonly AssistantConnectionContextStore connectionNotesStore;
+    private QueryTabViewModel? notesSource;
+    private ConnectionProfile? notesConnection;
+    private string? notesKey;
+    private string savedNotes = "";
+    private int notesRevision;
+    private bool loadingNotes;
+    private bool updatingNotes;
     private bool updatingAccounts;
     private bool ready;
     private string? sqlSnapshot;
@@ -28,6 +36,7 @@ public partial class AssistantWindow : Window
     private QueryResultSet? rowsSnapshot;
     private string? requestError;
     private bool completedAnswer;
+    private string requestedSql = "";
     private SavedAssistantChat? openedChat;
     private string? historyTarget;
     private static readonly FilePickerFileType ChatFiles = new("Rowfinch chat") { Patterns = ["*.rowfinch-chat.json"] };
@@ -37,6 +46,14 @@ public partial class AssistantWindow : Window
     private AssistantChatEntry? pendingEntry;
     private (bool Connected, string Label) sourceConnection;
     private string LatestAnswer => latestEntry?.Answer ?? "";
+    private string LatestSql
+    {
+        get
+        {
+            var suggestion = completedAnswer ? SuggestedSql(LatestAnswer) : "";
+            return !string.IsNullOrWhiteSpace(suggestion) ? suggestion : !string.IsNullOrWhiteSpace(requestedSql) ? requestedSql : completedAnswer ? conversation.LatestQuerySql() : "";
+        }
+    }
     private string? contextAccountId;
     private IAssistantDatabaseSession? database;
     private QueryTabViewModel? databaseSource;
@@ -47,23 +64,28 @@ public partial class AssistantWindow : Window
     {
         InitializeComponent();
         this.client = client; this.workspace = workspace; this.source = source ?? workspace.SelectedTab!; this.settings = settings;
+        connectionNotesStore = new(Path.Combine(Path.GetDirectoryName(settings.FilePath)!, "assistant-contexts.json"));
         SourceLabel.Text = $"Source: {this.source.DocumentName}. Database access is optional; each query requires approval.";
         DatabaseConnections.ItemsSource = workspace.Tabs;
         DatabaseConnections.SelectedItem = this.source;
         ChatMessages.ItemsSource = messages;
         sourceConnection = (this.source.IsConnected, this.source.ConnectionLabel);
         this.source.PropertyChanged += OnSourceConnectionChanged;
-        DatabaseConnections.SelectionChanged += (_, _) =>
+        DatabaseConnections.SelectionChanged += async (_, _) =>
         {
-            if (ready && database is null && openedChat is null && messages.Count > 0) ResetConversation();
+            if (!ready) return;
+            if (database is null && openedChat is null && messages.Count > 0) ResetConversation();
+            await RefreshConnectionNotesAsync();
         };
         ready = true;
         Models.SelectionChanged += (_, _) => RefreshButtons();
-        Opened += async (_, _) => await RunAsync(async token => { await client.InitializeAsync(token); await ConnectedAsync(token); });
+        Opened += async (_, _) => await RunAsync(async token => { await RefreshConnectionNotesAsync(); await client.InitializeAsync(token); await ConnectedAsync(token); });
         Closed += async (_, _) =>
         {
             lifetime.Cancel(); operation?.Cancel(); approvalDialog?.Close(false);
             this.source.PropertyChanged -= OnSourceConnectionChanged;
+            if (notesSource is { } previousNotesSource) previousNotesSource.PropertyChanged -= OnNotesSourceChanged;
+            notesRevision++;
             conversation.Clear(); messages.Clear(); latestEntry = pendingEntry = null;
             await RevokeDatabaseAsync();
         };
@@ -126,16 +148,78 @@ public partial class AssistantWindow : Window
     {
         try
         {
-            RequestPreview.Text = string.IsNullOrWhiteSpace(QuestionInput.Text) ? "Enter a question to preview the request." : AssistantContext.Build(QuestionInput.Text, sqlSnapshot, schemaSnapshot, rowsSnapshot);
+            RequestPreview.Text = string.IsNullOrWhiteSpace(QuestionInput.Text) ? "Enter a question to preview the request." : AssistantContext.Build(QuestionInput.Text, sqlSnapshot, schemaSnapshot, rowsSnapshot, connectionNotes: ShareConnectionNotes.IsChecked == true ? ConnectionNotesInput.Text : null);
             requestError = null;
         }
         catch (ArgumentException error) { RequestPreview.Text = ""; requestError = error.Message; AssistantStatus.Text = error.Message; }
         RefreshButtons();
     }
+    private void OnConnectionNotesChanged(object? sender, TextChangedEventArgs args)
+    {
+        if (!ready || updatingNotes) return;
+        ConnectionNotesStatus.Text = ConnectionNotesInput.Text == savedNotes ? "Saved connection notes. Checked notes are included in the request preview." : "Notes edited. Save notes to keep these changes for future chats. Checked notes are included in the preview.";
+        RefreshPreview();
+    }
+    private void OnNotesSharingChanged(object? sender, RoutedEventArgs args) { if (ready && !updatingNotes) RefreshPreview(); }
+    private async void OnNotesSourceChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName is nameof(QueryTabViewModel.IsConnected) or nameof(QueryTabViewModel.ConnectionLabel) or nameof(QueryTabViewModel.SelectedProfile)
+            or nameof(QueryTabViewModel.Server) or nameof(QueryTabViewModel.Database) or nameof(QueryTabViewModel.UserName) or nameof(QueryTabViewModel.AuthenticationIndex))
+            await RefreshConnectionNotesAsync();
+    }
+    private async Task RefreshConnectionNotesAsync()
+    {
+        if (lifetime.IsCancellationRequested) return;
+        var selected = databaseSource ?? DatabaseConnections.SelectedItem as QueryTabViewModel ?? source;
+        if (!ReferenceEquals(selected, notesSource))
+        {
+            if (notesSource is { } previous) previous.PropertyChanged -= OnNotesSourceChanged;
+            notesSource = selected; notesSource.PropertyChanged += OnNotesSourceChanged;
+        }
+        var profile = selected.AssistantContextConnection;
+        var key = profile is null ? null : AssistantConnectionContextStore.Key(profile);
+        if (key == notesKey && (profile is not null || notesRevision > 0)) return;
+        if (notesRevision > 0 && openedChat is null && messages.Count > 0)
+        {
+            if (pendingEntry is not null) { operation?.Cancel(); approvalDialog?.Close(false); }
+            ResetConversation();
+            AssistantStatus.Text = "The connection context changed. A new chat was started.";
+        }
+        var revision = ++notesRevision; notesKey = key; notesConnection = profile; loadingNotes = true;
+        updatingNotes = true;
+        savedNotes = ""; ConnectionNotesInput.Text = ""; ShareConnectionNotes.IsChecked = false;
+        ConnectionNotesTarget.Text = profile is null ? "Choose a saved connection or enter valid connection details to keep notes. Demo has no saved connection context."
+            : $"{profile.Name} · {profile.Database} · {profile.Server} · {profile.UserName}";
+        updatingNotes = false; RefreshPreview();
+        try
+        {
+            var notes = profile is null ? "" : await connectionNotesStore.LoadAsync(profile, lifetime.Token);
+            if (revision != notesRevision || lifetime.IsCancellationRequested) return;
+            updatingNotes = true;
+            savedNotes = notes; ConnectionNotesInput.Text = notes; ShareConnectionNotes.IsChecked = profile is not null && openedChat is null;
+            ConnectionNotesStatus.Text = "Save notes to reuse them in future chats.";
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception) { if (revision == notesRevision) ConnectionNotesStatus.Text = "Saved connection notes could not be loaded. Check the local assistant-contexts.json file. Your notes file has not been changed."; }
+        finally
+        {
+            if (revision == notesRevision) { updatingNotes = false; loadingNotes = false; RefreshPreview(); }
+        }
+    }
+    private async void OnSaveConnectionNotes(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
+    {
+        var profile = notesConnection ?? throw new InvalidOperationException("Choose a connection before saving notes.");
+        var key = notesKey;
+        var notes = ConnectionNotesInput.Text ?? "";
+        await connectionNotesStore.SaveAsync(profile, notes, token);
+        if (key == notesKey) { savedNotes = notes; ConnectionNotesStatus.Text = string.IsNullOrWhiteSpace(notes) ? "Saved notes cleared for this connection." : "Notes saved for this connection. They will load in future chats."; }
+        AssistantStatus.Text = "Connection notes saved locally. Nothing was sent to ChatGPT.";
+    });
+
     private void ClearSharedContext() => ResetConversation();
     private async void OnSend(object? sender, RoutedEventArgs args)
     {
-        if (operation is not null || requestError is not null || !conversation.CanContinue || Models.SelectedItem is not AssistantModel model || string.IsNullOrWhiteSpace(QuestionInput.Text)) return;
+        if (operation is not null || loadingNotes || requestError is not null || !conversation.CanContinue || Models.SelectedItem is not AssistantModel model || string.IsNullOrWhiteSpace(QuestionInput.Text)) return;
         if (openedChat is { } saved && saved.AccountId != client.Account?.ClientId)
         { AssistantStatus.Text = "This saved chat belongs to a different ChatGPT sign-in. Select its original saved account or choose New chat."; return; }
         if (contextAccountId is not null && contextAccountId != client.Account?.ClientId)
@@ -147,7 +231,7 @@ public partial class AssistantWindow : Window
         var revision = conversation.Revision;
         await RunAsync(async token =>
         {
-            completedAnswer = false; AssistantTabs.SelectedIndex = 0;
+            completedAnswer = false; requestedSql = ""; AssistantTabs.SelectedIndex = 0;
             var entry = new AssistantChatEntry(question);
             latestEntry = pendingEntry = entry; messages.Add(entry); RefreshButtons(); ScrollChat(true);
             AssistantStatus.Text = "Using ChatGPT plan · receiving answer…";
@@ -186,6 +270,7 @@ public partial class AssistantWindow : Window
         ResetConversation();
         conversation.Restore(saved);
         AllowSchemaAccess.IsChecked = AllowQueryAccess.IsChecked = false;
+        ShareConnectionNotes.IsChecked = false;
         foreach (var message in saved.Messages)
             messages.Add(new AssistantChatEntry(message.Question) { Answer = message.Answer, Status = "Assistant" });
         latestEntry = messages.Last(); completedAnswer = true;
@@ -256,7 +341,7 @@ public partial class AssistantWindow : Window
     private void ResetConversation(bool clearQuestion = true)
     {
         conversation.Clear(); messages.Clear(); latestEntry = pendingEntry = null; completedAnswer = false;
-        openedChat = null; historyTarget = null;
+        openedChat = null; historyTarget = null; requestedSql = "";
         if (database is null)
         {
             DatabaseContextLabel.Text = "Database access: off. Saved chats contain shared data; protect the files.";
@@ -333,6 +418,7 @@ public partial class AssistantWindow : Window
         catch { await candidate.DisposeAsync(); throw; }
         database = candidate; historyTarget = database.Target; openedChat = null;
         databaseSource = selected; databaseSource.PropertyChanged += OnDatabaseSourceChanged;
+        await RefreshConnectionNotesAsync();
         contextAccountId = client.Account?.ClientId;
         DatabaseAccessStatus.Text = "Enabled: " + database.Target + " · " +
             (AllowSchemaAccess.IsChecked == true ? "schema inspection" : "") + (database.CanQuery ? " · read-only queries with approval" : "");
@@ -361,6 +447,7 @@ public partial class AssistantWindow : Window
         var previous = database; database = null;
         if (previous is null) return;
         ResetConversation();
+        await RefreshConnectionNotesAsync();
         DatabaseAccessStatus.Text = "Access is off. Enable it again to allow database requests.";
         DatabaseContextLabel.Text = "Database access: off.";
         AddDatabaseActivity("Database access disabled.");
@@ -371,7 +458,9 @@ public partial class AssistantWindow : Window
     {
         token.ThrowIfCancellationRequested();
         if (database is null || lifetime.IsCancellationRequested) return false;
-        // Reject unsupported SQL before asking for a meaningless approval.
+        // Retain the complete requested SQL for manual review even if it is rejected or the answer fails.
+        requestedSql = request.Sql;
+        // Reject unsupported SQL before asking for approval. The tool reports this to the model for correction.
         ReadOnlySqlPolicy.Validate(request.Sql);
         AssistantStatus.Text = "Waiting for your query approval…";
         var dialog = new AssistantQueryApprovalDialog(request);
@@ -403,8 +492,8 @@ public partial class AssistantWindow : Window
         @"```(?:sql|tsql|t-sql)[ \t]*\r?\n(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)).Select(match => match.Groups[1].Value.Trim()));
     private void OnOpenSql(object? sender, RoutedEventArgs args)
     {
-        if (!completedAnswer || !workspace.CanManageTabs || !workspace.Tabs.Contains(source)) return;
-        var sql = SuggestedSql(LatestAnswer);
+        if (operation is not null || !workspace.CanManageTabs || !workspace.Tabs.Contains(source)) return;
+        var sql = LatestSql;
         if (string.IsNullOrWhiteSpace(sql)) return;
         var tab = workspace.NewTab(sql, "Assistant suggestion.sql", source);
         tab.SetDocument(sql, tab.DocumentName, isSaved: false);
@@ -424,11 +513,13 @@ public partial class AssistantWindow : Window
         SignOutButton.IsEnabled = !busy && (client.Account is not null || Accounts.SelectedItem is AssistantAccount);
         AccountStatus.Text = client.Account is { } active ? active.DisplayName + (active.CanUsePlan ? " · Using ChatGPT plan" : " · ChatGPT plan permission is not enabled") : "Continue with ChatGPT to use the assistant.";
         Models.IsEnabled = QuestionInput.IsEnabled = ShareSql.IsEnabled = ShareSchema.IsEnabled = ShareRows.IsEnabled = RefreshContextButton.IsEnabled = !busy;
-        SendAssistantButton.IsEnabled = !busy && conversation.CanContinue && requestError is null && client.Account?.CanUsePlan == true &&
+        SendAssistantButton.IsEnabled = !busy && !loadingNotes && conversation.CanContinue && requestError is null && client.Account?.CanUsePlan == true &&
             (Accounts.SelectedItem as AssistantAccount)?.ClientId == client.Account.ClientId && Models.SelectedItem is AssistantModel && !string.IsNullOrWhiteSpace(QuestionInput.Text);
+        ConnectionNotesInput.IsEnabled = ShareConnectionNotes.IsEnabled = SaveConnectionNotesButton.IsEnabled = !busy && !loadingNotes && notesConnection is not null;
         CancelAssistantButton.IsEnabled = busy;
         CopyAnswerButton.IsEnabled = !busy && !string.IsNullOrEmpty(LatestAnswer);
-        OpenSqlButton.IsEnabled = !busy && completedAnswer && workspace.CanManageTabs && workspace.Tabs.Contains(source) && !string.IsNullOrWhiteSpace(SuggestedSql(LatestAnswer));
+        OpenSqlButton.IsEnabled = !busy && workspace.CanManageTabs && workspace.Tabs.Contains(source) && !string.IsNullOrWhiteSpace(LatestSql);
+        ToolTip.SetTip(OpenSqlButton, busy ? "Wait for the current operation to finish." : OpenSqlButton.IsEnabled ? "Open suggested SQL, or the most recent database query, for review. It will not run automatically." : "Available after a completed answer contains SQL or a full database query has been requested, including a rejected query.");
     }
 
     private void UpdateAccounts(bool preferNew = false)

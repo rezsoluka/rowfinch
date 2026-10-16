@@ -27,3 +27,4 @@ __pycache__/
 
 # Saved assistant conversations can contain private database data.
 *.rowfinch-chat.json
+assistant-contexts.json

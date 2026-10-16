@@ -6,6 +6,22 @@ namespace Rowfinch.Tests;
 public sealed class AssistantConversationTests
 {
     [Fact]
+    public void LatestQueryComesOnlyFromCommittedSupportedDatabaseCalls()
+    {
+        var chat = new AssistantConversation();
+        using (var failed = chat.Begin("account")) { Assert.Empty(chat.LatestQuerySql()); }
+        using (var turn = chat.Begin("account")) turn.Commit([
+            new { role = "user", content = "Orders" },
+            new { type = "function_call", name = "query", arguments = "{\"sql\":\"SELECT 1;\"}" },
+            new { type = "function_call", name = "describe_object", arguments = "{\"sql\":\"do not open metadata\"}" },
+            new { type = "function_call", name = "rowfinch.query", arguments = "{\"sql\":\"SELECT 2;\"}" },
+            new { role = "assistant", content = "Two orders found, without a SQL code block." }
+        ]);
+        Assert.Equal("SELECT 2;", chat.LatestQuerySql());
+        chat.Clear(); Assert.Empty(chat.LatestQuerySql());
+    }
+
+    [Fact]
     public void ClearingInvalidatesPendingTurnsWithoutDamagingANewerChat()
     {
         var chat = new AssistantConversation();

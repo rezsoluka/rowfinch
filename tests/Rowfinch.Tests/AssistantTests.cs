@@ -19,7 +19,9 @@ public sealed class AssistantTests
         Assert.Equal("Explain joins", AssistantContext.Build("Explain joins"));
         var result = new QueryResultSet("sample", [new("Name", "nvarchar"), new("Name", "nvarchar")],
             Enumerable.Range(0, 10).Select(i => new object?[] { $"row{i}", new string('x', 3000) }).ToArray(), false);
-        var text = AssistantContext.Build("Explain", "SELECT 1;", "[dbo].[Customers]", result);
+        var text = AssistantContext.Build("Explain", "SELECT 1;", "[dbo].[Customers]", result, connectionNotes: "PO is the order header; POitems contains lines.");
+        Assert.Contains("POitems contains lines", text);
+        Assert.DoesNotContain("Connection notes", AssistantContext.Build("Explain"));
         Assert.Contains("SELECT 1;", text);
         Assert.Contains("[dbo].[Customers]", text);
         Assert.Contains("Name_2", text);
@@ -282,7 +284,7 @@ public sealed class AssistantTests
         using var fixture = new AuthFixture();
         static string Event(object payload) => "data: " + JsonSerializer.Serialize(payload) + "\n\n";
         var call = new { type = "function_call", id = "f1", call_id = "call1", @namespace = "rowfinch", name = "list_objects", arguments = "{\"filter\":\"POItems\"}", status = "completed" };
-        var reasoning = new { type = "reasoning", id = "r1", summary = Array.Empty<object>(), encrypted_content = "opaque-reasoning" };
+        var reasoning = new { type = "reasoning", id = "r1", summary = Array.Empty<object>(), encrypted_content = "opaque-reasoning", content = (object?)null };
         fixture.ResponseStreams.Enqueue(Event(new { type = "response.output_item.done", output_index = 0, item = reasoning }) +
             Event(new { type = "response.output_item.done", output_index = 1, item = call }) +
             Event(new { type = "response.completed", response = new { status = "completed" } }));
@@ -403,11 +405,37 @@ public sealed class AssistantTests
         Assert.DoesNotContain("account-a", fixture.RequestBodies.Last());
     }
 
+    [Fact]
+    public async Task PolicyRejectionIsSentBackToTheModelAndARevisedWeekQueryNeedsFreshApproval()
+    {
+        using var fixture = new AuthFixture();
+        fixture.ResponseStreams.Enqueue(ToolResponse("query", JsonSerializer.Serialize(new { sql = "DECLARE @week date = GETDATE(); SELECT @week;", reason = "Week boundary" })));
+        fixture.ResponseStreams.Enqueue(ToolResponse("query", JsonSerializer.Serialize(new { sql = "SELECT DATEADD(week, DATEDIFF(week, 0, GETDATE()), 0);", reason = "Week boundary as one SELECT" })));
+        using var client = fixture.CreateClient();
+        await client.SignInAsync(null, fixture.BrowserAsync, TestContext.Current.CancellationToken);
+        await using var database = new ToolDatabase { CanQuery = true };
+        var approvals = 0;
+        var tools = new AssistantDatabaseTools(database, true, (request, _) =>
+        { ReadOnlySqlPolicy.Validate(request.Sql); approvals++; return Task.FromResult(true); });
+        var chat = new AssistantConversation();
+        var answer = await client.AskConversationAsync("available-model", "Total units and sales this week", chat, tools, null, TestContext.Current.CancellationToken);
+        Assert.Contains("SELECT 42", answer);
+        Assert.Equal(1, approvals); Assert.Equal(1, database.QueryCalls); Assert.Equal(3, fixture.RequestBodies.Count);
+        using var correction = JsonDocument.Parse(fixture.RequestBodies[1]);
+        var feedback = correction.RootElement.GetProperty("input").EnumerateArray().Single(item => item.TryGetProperty("type", out var type) && type.GetString() == "function_call_output").GetProperty("output").GetString()!;
+        using var rejected = JsonDocument.Parse(feedback);
+        Assert.Equal("sql_policy_rejected", rejected.RootElement.GetProperty("code").GetString());
+        Assert.False(rejected.RootElement.GetProperty("executed").GetBoolean());
+        Assert.Equal(1, chat.CompletedExchanges);
+        var restored = SavedAssistantChat.Deserialize(chat.Save([new("Total units and sales this week", answer)], database.Target, "available-model", "").Serialize());
+        Assert.Contains("sql_policy_rejected", JsonSerializer.Serialize(restored.History));
+    }
+
     private static string ToolResponse(string name, string arguments) => "data: " + JsonSerializer.Serialize(new
     {
         type = "response.completed", response = new { status = "completed", output = new object[]
         {
-            new { type = "reasoning", id = "r1", summary = Array.Empty<object>(), encrypted_content = "opaque-reasoning" },
+            new { type = "reasoning", id = "r1", summary = Array.Empty<object>(), encrypted_content = "opaque-reasoning", content = (object?)null },
             new { type = "function_call", id = "f1", call_id = "call" + Guid.NewGuid().ToString("N"), @namespace = "rowfinch", name, arguments }
         } }
     }) + "\n\n";
@@ -511,7 +539,7 @@ public sealed class AssistantTests
                 ResponseCalls++; RequestBody = await request.Content!.ReadAsStringAsync(token); RequestBodies.Add(RequestBody); ResponseStarted.TrySetResult();
                 if (BlockResponse) await Task.Delay(Timeout.Infinite, token);
                 var text = "data: " + JsonSerializer.Serialize(new { type = "response.output_text.delta", delta = "```sql\nSELECT 42;\n```" }) + "\n\n" +
-                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+                    "data: " + JsonSerializer.Serialize(new { type = "response.completed", response = new { status = "completed", output = new[] { new { type = "message", id = "msg_final", role = "assistant", phase = "final_answer", status = "completed", content = new[] { new { type = "output_text", text = "```sql\nSELECT 42;\n```", annotations = Array.Empty<object>() } } } } } }) + "\n\n";
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ResponseStreams.Count > 0 ? ResponseStreams.Dequeue() : text, Encoding.UTF8, "text/event-stream") };
             }
             throw new InvalidOperationException("Unexpected test HTTP endpoint.");
