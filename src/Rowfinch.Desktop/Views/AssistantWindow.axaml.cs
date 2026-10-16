@@ -15,7 +15,15 @@ namespace Rowfinch.Desktop.Views;
 
 public partial class AssistantWindow : Window
 {
-    private readonly IAssistantClient client;
+    private IAssistantClient client;
+    private readonly IAssistantClient chatGptClient;
+    private readonly IAssistantClient claudeClient;
+    private readonly bool ownsClaude;
+    private bool updatingProvider;
+    private readonly Dictionary<string, (SavedAssistantChat? Chat, string Draft)> providerChats = [];
+    private bool IsClaude => client.ProviderId == "claude";
+    private string ProviderName => IsClaude ? "Claude" : "ChatGPT";
+    private string Recipient => IsClaude ? "Anthropic" : "OpenAI";
     private readonly WorkspaceViewModel workspace;
     private readonly QueryTabViewModel source;
     private readonly LocalSettingsStore settings;
@@ -60,10 +68,10 @@ public partial class AssistantWindow : Window
     private AssistantQueryApprovalDialog? approvalDialog;
 
     public AssistantWindow() : this(new ChatGptAssistantClient(), new WorkspaceViewModel(), null, new LocalSettingsStore()) { }
-    public AssistantWindow(IAssistantClient client, WorkspaceViewModel workspace, QueryTabViewModel? source, LocalSettingsStore settings)
+    public AssistantWindow(IAssistantClient client, WorkspaceViewModel workspace, QueryTabViewModel? source, LocalSettingsStore settings, IAssistantClient? claudeClient = null)
     {
         InitializeComponent();
-        this.client = client; this.workspace = workspace; this.source = source ?? workspace.SelectedTab!; this.settings = settings;
+        this.client = chatGptClient = client; this.claudeClient = claudeClient ?? new ClaudeAssistantClient(settings); ownsClaude = claudeClient is null; this.workspace = workspace; this.source = source ?? workspace.SelectedTab!; this.settings = settings;
         connectionNotesStore = new(Path.Combine(Path.GetDirectoryName(settings.FilePath)!, "assistant-contexts.json"));
         SourceLabel.Text = $"Source: {this.source.DocumentName}. Database access is optional; each query requires approval.";
         DatabaseConnections.ItemsSource = workspace.Tabs;
@@ -77,9 +85,12 @@ public partial class AssistantWindow : Window
             if (database is null && openedChat is null && messages.Count > 0) ResetConversation();
             await RefreshConnectionNotesAsync();
         };
+        Providers.ItemsSource = new[] { "ChatGPT", "Claude" };
+        Providers.SelectedIndex = 0;
         ready = true;
+        RefreshProvider();
         Models.SelectionChanged += (_, _) => RefreshButtons();
-        Opened += async (_, _) => await RunAsync(async token => { await RefreshConnectionNotesAsync(); await client.InitializeAsync(token); await ConnectedAsync(token); });
+        Opened += async (_, _) => await RunAsync(async token => { await RefreshConnectionNotesAsync(); await this.client.InitializeAsync(token); await ConnectedAsync(token); });
         Closed += async (_, _) =>
         {
             lifetime.Cancel(); operation?.Cancel(); approvalDialog?.Close(false);
@@ -88,8 +99,44 @@ public partial class AssistantWindow : Window
             notesRevision++;
             conversation.Clear(); messages.Clear(); latestEntry = pendingEntry = null;
             await RevokeDatabaseAsync();
+            providerChats.Clear();
+            if (ownsClaude) this.claudeClient.Dispose();
         };
         RefreshConversationInfo(); RefreshPreview(); RefreshButtons();
+    }
+
+    private void RefreshProvider()
+    {
+        updatingProvider = true;
+        Providers.SelectedIndex = IsClaude ? 1 : 0;
+        updatingProvider = false;
+        SignInButton.Content = IsClaude ? "Set up API key" : "Continue with ChatGPT";
+        SignOutButton.Content = IsClaude ? "Remove API key" : "Sign out";
+        AddAccountButton.IsVisible = Accounts.IsVisible = !IsClaude;
+        ProviderDisclosure.Text = $"Send shares this chat and selected context with {Recipient}. Provider chats stay separate; switching disables database access.";
+        AllowSchemaAccess.Content = $"Allow schema inspection (names and columns shared with {Recipient})";
+    }
+    private async void OnProviderChanged(object? sender, SelectionChangedEventArgs args)
+    {
+        if (!ready || updatingProvider) return;
+        var next = Providers.SelectedIndex == 1 ? claudeClient : chatGptClient;
+        if (ReferenceEquals(next, client)) return;
+        if (operation is not null) { RefreshProvider(); return; }
+        await RunAsync(async token =>
+        {
+            providerChats[client.ProviderId] = (conversation.CompletedExchanges > 0 ? CreateSavedChat() : null, QuestionInput.Text ?? "");
+            await RevokeDatabaseAsync(); ResetConversation();
+            client = next; RefreshProvider(); Models.ItemsSource = Array.Empty<AssistantModel>(); UpdateAccounts();
+            contextAccountId = null; ShareConnectionNotes.IsChecked = false;
+            if (providerChats.TryGetValue(client.ProviderId, out var previous))
+            {
+                if (previous.Chat is { } saved) await RestoreChatAsync(saved, token);
+                else QuestionInput.Text = previous.Draft;
+            }
+            await client.InitializeAsync(token); await ConnectedAsync(token);
+            if (openedChat is { } restored && Models.Items.OfType<AssistantModel>().FirstOrDefault(model => model.Id == restored.ModelId) is { } selected) Models.SelectedItem = selected;
+            AssistantStatus.Text = $"{ProviderName} selected. Review Context before sending. Database access is off.";
+        });
     }
 
     private async Task OpenBrowserAsync(Uri uri)
@@ -99,11 +146,11 @@ public partial class AssistantWindow : Window
     {
         UpdateAccounts();
         Models.ItemsSource = Array.Empty<AssistantModel>();
-        AccountStatus.Text = client.Account is { } account ? account.DisplayName + (account.CanUsePlan ? " · Using ChatGPT plan" : " · ChatGPT plan permission is not enabled")
-            : "Sign in with an eligible ChatGPT account. Login credentials are stored in your desktop keyring.";
+        AccountStatus.Text = client.Account is { } account ? account.DisplayName + (IsClaude ? " · Claude Console API billing" : account.CanUsePlan ? " · Using ChatGPT plan" : " · ChatGPT plan permission is not enabled")
+            : IsClaude ? "Set up your Anthropic API key. API usage is billed through Claude Console." : "Sign in with an eligible ChatGPT account. Login credentials are stored in your desktop keyring.";
         if (client.Account?.CanUsePlan == true)
         {
-            if (!(await settings.LoadAsync(token)).ChatGptWelcomeShown)
+            if (!IsClaude && !(await settings.LoadAsync(token)).ChatGptWelcomeShown)
             {
                 await new SafetyPrivacyDialog(false, "You're using your ChatGPT plan.\n\nEligible AI requests in Rowfinch use your ChatGPT plan or available credits and are subject to account/workspace limits. You can manage Rowfinch's usage and access in ChatGPT settings.\n\nThe request preview and any schema or approved query results you enable are shared with OpenAI. Review sharing and approvals carefully.", "Got it")
                     { Title = "You're using your ChatGPT plan", Width = 570, Height = 360 }.ShowDialog<bool>(this);
@@ -112,14 +159,27 @@ public partial class AssistantWindow : Window
             }
             var models = await client.GetModelsAsync(token);
             Models.ItemsSource = models;
-            Models.SelectedItem = models.FirstOrDefault();
-            AssistantStatus.Text = models.Count == 0 ? "No available models were returned for this account. Review plan access in ChatGPT settings." : "Ready. Follow-ups reuse earlier completed messages and shared data in this chat.";
+            Models.SelectedItem = models.FirstOrDefault(model => model.Id == openedChat?.ModelId) ?? models.FirstOrDefault();
+            AssistantStatus.Text = models.Count == 0 ? "No available models were returned. Review access in " + ProviderName + " settings." : "Ready. Follow-ups reuse earlier completed messages and shared data in this chat.";
         }
-        else AssistantStatus.Text = "Continue with ChatGPT and approve plan access to use the assistant.";
+        else AssistantStatus.Text = IsClaude ? "Set up your Anthropic API key to use Claude." : "Continue with ChatGPT and approve plan access to use the assistant.";
     }
 
     private async void OnSignIn(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
-    { await client.SignInAsync((Accounts.SelectedItem as AssistantAccount)?.ClientId ?? client.Account?.ClientId, OpenBrowserAsync, token); await ConnectedAsync(token); });
+    {
+        if (client is IApiKeyAssistantClient api)
+        {
+            var previousAccount = client.Account?.ClientId;
+            if (!await new ClaudeApiKeyDialog(api, token).ShowDialog<bool>(this)) return;
+            if (previousAccount != client.Account?.ClientId)
+            {
+                await RevokeDatabaseAsync();
+                if (openedChat is not { } saved || saved.Provider != client.ProviderId || saved.AccountId != client.Account?.ClientId) ResetConversation();
+            }
+        }
+        else await client.SignInAsync((Accounts.SelectedItem as AssistantAccount)?.ClientId ?? client.Account?.ClientId, OpenBrowserAsync, token);
+        await ConnectedAsync(token);
+    });
     private async void OnAddAccount(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
     { await client.SignInAsync(null, OpenBrowserAsync, token); await ConnectedAsync(token); });
     private async void OnSignOut(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
@@ -130,7 +190,7 @@ public partial class AssistantWindow : Window
         await RunAsync(async token => { await client.SelectAccountAsync(account.ClientId, token); await RevokeDatabaseAsync(); if (openedChat is null) ClearSharedContext(); await ConnectedAsync(token); });
     }
     private async void OnManageUsage(object? sender, RoutedEventArgs args)
-    { try { await OpenBrowserAsync(new Uri("https://chatgpt.com/settings/usage")); } catch (Exception error) { AssistantStatus.Text = error.Message; } }
+    { try { await OpenBrowserAsync(new Uri(IsClaude ? "https://platform.claude.com/settings/usage" : "https://chatgpt.com/settings/usage")); } catch (Exception error) { AssistantStatus.Text = error.Message; } }
 
     private void OnQuestionChanged(object? sender, TextChangedEventArgs args) { if (ready) RefreshPreview(); }
     private void OnSharingChanged(object? sender, RoutedEventArgs args) { if (ready) CaptureContext(); }
@@ -213,17 +273,17 @@ public partial class AssistantWindow : Window
         var notes = ConnectionNotesInput.Text ?? "";
         await connectionNotesStore.SaveAsync(profile, notes, token);
         if (key == notesKey) { savedNotes = notes; ConnectionNotesStatus.Text = string.IsNullOrWhiteSpace(notes) ? "Saved notes cleared for this connection." : "Notes saved for this connection. They will load in future chats."; }
-        AssistantStatus.Text = "Connection notes saved locally. Nothing was sent to ChatGPT.";
+        AssistantStatus.Text = "Connection notes saved locally. Nothing was sent to the assistant provider.";
     });
 
     private void ClearSharedContext() => ResetConversation();
     private async void OnSend(object? sender, RoutedEventArgs args)
     {
         if (operation is not null || loadingNotes || requestError is not null || !conversation.CanContinue || Models.SelectedItem is not AssistantModel model || string.IsNullOrWhiteSpace(QuestionInput.Text)) return;
-        if (openedChat is { } saved && saved.AccountId != client.Account?.ClientId)
-        { AssistantStatus.Text = "This saved chat belongs to a different ChatGPT sign-in. Select its original saved account or choose New chat."; return; }
+        if (openedChat is { } saved && (saved.Provider != client.ProviderId || saved.AccountId != client.Account?.ClientId))
+        { AssistantStatus.Text = "This saved chat belongs to a different assistant provider or account. Select its original saved account or choose New chat."; return; }
         if (contextAccountId is not null && contextAccountId != client.Account?.ClientId)
-        { await RevokeDatabaseAsync(); ClearSharedContext(); AssistantStatus.Text = "The ChatGPT account changed. The previous chat was cleared; review context before sending again."; return; }
+        { await RevokeDatabaseAsync(); ClearSharedContext(); AssistantStatus.Text = "The assistant account changed. The previous chat was cleared; review context before sending again."; return; }
         contextAccountId = client.Account?.ClientId;
         openedChat = null;
         var request = RequestPreview.Text!;
@@ -234,7 +294,7 @@ public partial class AssistantWindow : Window
             completedAnswer = false; requestedSql = ""; AssistantTabs.SelectedIndex = 0;
             var entry = new AssistantChatEntry(question);
             latestEntry = pendingEntry = entry; messages.Add(entry); RefreshButtons(); ScrollChat(true);
-            AssistantStatus.Text = "Using ChatGPT plan · receiving answer…";
+            AssistantStatus.Text = ProviderName + (IsClaude ? " API · receiving answer…" : " plan · receiving answer…");
             try
             {
                 var progress = new Progress<string>(delta =>
@@ -268,6 +328,14 @@ public partial class AssistantWindow : Window
         await RevokeDatabaseAsync();
         token.ThrowIfCancellationRequested(); lifetime.Token.ThrowIfCancellationRequested();
         ResetConversation();
+        if (saved.Provider != client.ProviderId)
+        {
+            client = saved.Provider == "claude" ? claudeClient : chatGptClient;
+            RefreshProvider();
+            try { await client.InitializeAsync(token); await ConnectedAsync(token); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { Models.ItemsSource = Array.Empty<AssistantModel>(); UpdateAccounts(); }
+        }
         conversation.Restore(saved);
         AllowSchemaAccess.IsChecked = AllowQueryAccess.IsChecked = false;
         ShareConnectionNotes.IsChecked = false;
@@ -283,7 +351,7 @@ public partial class AssistantWindow : Window
         DatabaseAccessStatus.Text = "Access is off. To resume with fresh database access, enable the original database/server/user: " + (saved.DatabaseTarget ?? "none; choose New chat to enable access") + ".";
         AssistantTabs.SelectedIndex = 0;
         RefreshConversationInfo(); RefreshPreview(); ScrollChat(true);
-        AssistantStatus.Text = "Chat opened locally. Review its history in Context. Send shares that history with ChatGPT; new queries still require approval.";
+        AssistantStatus.Text = $"Chat opened locally. Review its history in Context. Send shares that history with {ProviderName}; new queries still require approval.";
     }
 
     private async void OnSaveChat(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
@@ -387,7 +455,7 @@ public partial class AssistantWindow : Window
         operation = cancellation; AssistantStatus.Text = "Working…"; RefreshButtons();
         try { await action(cancellation.Token); }
         catch (OperationCanceledException) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = "Cancelled. Any displayed answer may be partial and is not used in follow-ups."; }
-        catch (Exception error) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = error is HttpRequestException ? "Could not reach OpenAI. Check your network connection and try again." : error.Message; }
+        catch (Exception error) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = error is HttpRequestException ? $"Could not reach {Recipient}. Check your network connection and try again." : error.Message; }
         finally
         {
             cancellation.Cancel(); operation = null;
@@ -409,16 +477,17 @@ public partial class AssistantWindow : Window
         {
             if (openedChat is { } saved)
             {
-                if (saved.AccountId != client.Account?.ClientId || saved.DatabaseTarget is null || saved.DatabaseTarget != candidate.Target)
-                    throw new InvalidOperationException("To retain this saved chat, use its original ChatGPT account and database/server/user: " + (saved.DatabaseTarget ?? "no database access") + ". Otherwise choose New chat first.");
+                if ((saved.Provider != client.ProviderId || saved.AccountId != client.Account?.ClientId) || saved.DatabaseTarget is null || saved.DatabaseTarget != candidate.Target)
+                    throw new InvalidOperationException("To retain this saved chat, use its original assistant provider, account and database/server/user: " + (saved.DatabaseTarget ?? "no database access") + ". Otherwise choose New chat first.");
                 conversation.BindRestoredDatabase(saved.AccountId, candidate, AllowSchemaAccess.IsChecked == true, candidate.CanQuery);
             }
             else ResetConversation(clearQuestion: messages.Count > 0);
         }
         catch { await candidate.DisposeAsync(); throw; }
-        database = candidate; historyTarget = database.Target; openedChat = null;
+        database = candidate; historyTarget = database.Target;
         databaseSource = selected; databaseSource.PropertyChanged += OnDatabaseSourceChanged;
         await RefreshConnectionNotesAsync();
+        openedChat = null;
         contextAccountId = client.Account?.ClientId;
         DatabaseAccessStatus.Text = "Enabled: " + database.Target + " · " +
             (AllowSchemaAccess.IsChecked == true ? "schema inspection" : "") + (database.CanQuery ? " · read-only queries with approval" : "");
@@ -463,7 +532,7 @@ public partial class AssistantWindow : Window
         // Reject unsupported SQL before asking for approval. The tool reports this to the model for correction.
         ReadOnlySqlPolicy.Validate(request.Sql);
         AssistantStatus.Text = "Waiting for your query approval…";
-        var dialog = new AssistantQueryApprovalDialog(request);
+        var dialog = new AssistantQueryApprovalDialog(request, Recipient);
         approvalDialog = dialog;
         using var registration = token.Register(() => Dispatcher.UIThread.Post(() => dialog.Close(false)));
         try
@@ -506,15 +575,15 @@ public partial class AssistantWindow : Window
         SaveChatButton.IsEnabled = !busy && conversation.CompletedExchanges > 0;
         OpenChatButton.IsEnabled = !busy;
         NewChatButton.IsEnabled = !busy || pendingEntry is not null;
-        SignInButton.IsEnabled = AddAccountButton.IsEnabled = Accounts.IsEnabled = !busy;
+        Providers.IsEnabled = SignInButton.IsEnabled = AddAccountButton.IsEnabled = Accounts.IsEnabled = !busy;
         DatabaseConnections.IsEnabled = AllowSchemaAccess.IsEnabled = AllowQueryAccess.IsEnabled = !busy && database is null;
         EnableDatabaseButton.IsEnabled = !busy && database is null;
         DisableDatabaseButton.IsEnabled = database is not null;
         SignOutButton.IsEnabled = !busy && (client.Account is not null || Accounts.SelectedItem is AssistantAccount);
-        AccountStatus.Text = client.Account is { } active ? active.DisplayName + (active.CanUsePlan ? " · Using ChatGPT plan" : " · ChatGPT plan permission is not enabled") : "Continue with ChatGPT to use the assistant.";
+        AccountStatus.Text = client.Account is { } active ? active.DisplayName + (IsClaude ? " · Claude Console API billing" : active.CanUsePlan ? " · Using ChatGPT plan" : " · ChatGPT plan permission is not enabled") : IsClaude ? "Set up your Anthropic API key to use Claude." : "Continue with ChatGPT to use the assistant.";
         Models.IsEnabled = QuestionInput.IsEnabled = ShareSql.IsEnabled = ShareSchema.IsEnabled = ShareRows.IsEnabled = RefreshContextButton.IsEnabled = !busy;
         SendAssistantButton.IsEnabled = !busy && !loadingNotes && conversation.CanContinue && requestError is null && client.Account?.CanUsePlan == true &&
-            (Accounts.SelectedItem as AssistantAccount)?.ClientId == client.Account.ClientId && Models.SelectedItem is AssistantModel && !string.IsNullOrWhiteSpace(QuestionInput.Text);
+            (IsClaude || (Accounts.SelectedItem as AssistantAccount)?.ClientId == client.Account.ClientId) && Models.SelectedItem is AssistantModel && !string.IsNullOrWhiteSpace(QuestionInput.Text);
         ConnectionNotesInput.IsEnabled = ShareConnectionNotes.IsEnabled = SaveConnectionNotesButton.IsEnabled = !busy && !loadingNotes && notesConnection is not null;
         CancelAssistantButton.IsEnabled = busy;
         CopyAnswerButton.IsEnabled = !busy && !string.IsNullOrEmpty(LatestAnswer);

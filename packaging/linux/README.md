@@ -7,7 +7,7 @@ Rowfinch packages include the .NET runtime, the app, a `rowfinch` command, a des
 From the repository root:
 
 ```bash
-sudo apt install ./artifacts/packages/rowfinch_0.3.0~beta.2_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.4.0~beta.1_amd64.deb
 rowfinch
 ```
 
@@ -57,9 +57,9 @@ docker build --progress=plain -f packaging/linux/Dockerfile -t rowfinch-package-
 By default it reinstalls the same version. To exercise an actual version upgrade, first build a temporary next-version package, then provide it:
 
 ```bash
-./scripts/build-deb.sh --version 0.3.0-beta.3
+./scripts/build-deb.sh --version 0.4.0-beta.2
 docker build --progress=plain -f packaging/linux/Dockerfile \
-  --build-arg UPGRADE_PACKAGE=rowfinch_0.3.0~beta.3_amd64.deb \
+  --build-arg UPGRADE_PACKAGE=rowfinch_0.4.0~beta.2_amd64.deb \
   -t rowfinch-package-test .
 ```
 
@@ -120,3 +120,12 @@ Use demo mode for initial UI/template checks, then verify metadata and generated
 3. Ask the assistant to run an approved read-only query and summarize it without a SQL code block. Open latest SQL in new tab should open the query used, without running it. Check that New chat clears the available SQL and incomplete answers cannot supply partial suggestions.
 
 4. Ask for current-week units/sales. Verify date-part expressions and safe numeric conversions reach query approval. Unsupported DECLARE/local-variable forms should return policy feedback to the assistant for revision without executing SQL. Confirm revised queries still require approval, declining prevents further queries, and a complete rejected query can be opened for manual review even if the answer fails.
+
+## Claude acceptance checks (0.4.0-beta.1)
+
+1. Select Claude in Assistant. Confirm the Anthropic sharing/billing text, API-key setup and Console usage link. Try a bad key or workspace: keep the previous credential working and exclude raw API errors from diagnostics.
+2. Validate a real key with a matching workspace ID if required, using the keyring or session-only storage. Check that models load from the API. Restart and verify only remembered credentials reload; session-only keys need re-entry. Check that settings and chat files contain no API key.
+3. Ask a question, follow up, save/reopen a Claude chat and follow up again. Confirm schema tools and every new query use the same permission/approval limits as ChatGPT. Decline a query and verify nothing executes. Cancel during streaming or approval; partial turns must not enter follow-ups.
+4. Switch between ChatGPT and Claude with completed chats and drafts. Confirm separate histories, recipient-specific approval text, database access off after switching, and sharing options off. Return to each chat and verify the other provider's content is absent. Open an older ChatGPT chat file and confirm it remains usable.
+
+Automated Claude tests use simulated HTTP and a fake keyring. Live Claude billing, account permissions, network service and inference require a user-supplied key and remain manual checks.

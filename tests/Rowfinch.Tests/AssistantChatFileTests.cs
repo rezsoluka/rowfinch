@@ -19,7 +19,7 @@ public sealed class AssistantChatFileTests
                 new { type = "function_call_output", call_id = "call_1", output = "private shared result" },
                 new { role = "assistant", content = "Found orders" }
             ]);
-        return chat.Save([new("Find orders", "Found orders")], "db · server · readonly", "model", "Follow-up draft");
+        return chat.Save([new("Find orders", "Found orders")], "db · server · readonly", "model", "Follow-up draft") with { Version = 1 };
     }
 
     [Theory]

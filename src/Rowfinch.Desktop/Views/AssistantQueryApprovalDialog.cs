@@ -8,7 +8,7 @@ namespace Rowfinch.Desktop.Views;
 
 public sealed class AssistantQueryApprovalDialog : Window
 {
-    public AssistantQueryApprovalDialog(AssistantQueryApproval request)
+    public AssistantQueryApprovalDialog(AssistantQueryApproval request, string recipient = "OpenAI")
     {
         Title = "Approve assistant query"; Width = 720; Height = 570; MinWidth = 540; MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -25,7 +25,7 @@ public sealed class AssistantQueryApprovalDialog : Window
         ScrollViewer.SetHorizontalScrollBarVisibility(sql, Avalonia.Controls.Primitives.ScrollBarVisibility.Auto);
         ScrollViewer.SetVerticalScrollBarVisibility(sql, Avalonia.Controls.Primitives.ScrollBarVisibility.Auto);
         Grid.SetRow(sql, 2); grid.Children.Add(sql);
-        var disclosure = new TextBlock { Text = "Approval runs exactly this SQL on the connection above and shares the bounded result with OpenAI in this question. Limits: 100 rows, 100 columns, 15 seconds, 2000 text characters or 1500 binary bytes per cell, and bounded total output. Data may be sensitive. Decline runs nothing.", TextWrapping = TextWrapping.Wrap };
+        var disclosure = new TextBlock { Text = $"Approval runs exactly this SQL on the connection above and shares the bounded result with {recipient} in this question. Limits: 100 rows, 100 columns, 15 seconds, 2000 text characters or 1500 binary bytes per cell, and bounded total output. Data may be sensitive. Decline runs nothing.", TextWrapping = TextWrapping.Wrap };
         Grid.SetRow(disclosure, 3); grid.Children.Add(disclosure);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 10, Children = { decline, approve } };
         Grid.SetRow(buttons, 4); grid.Children.Add(buttons); Content = grid;

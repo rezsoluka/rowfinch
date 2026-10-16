@@ -1,6 +1,6 @@
 ARG UBUNTU_VERSION=24.04
 FROM ubuntu:${UBUNTU_VERSION}
-ARG PACKAGE=rowfinch_0.3.0~beta.2_amd64.deb
+ARG PACKAGE=rowfinch_0.4.0~beta.1_amd64.deb
 ARG UPGRADE_PACKAGE=${PACKAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 COPY artifacts/packages/${PACKAGE} /packages/rowfinch.deb

@@ -7,9 +7,9 @@ public sealed record SavedChatMessage(string Question, string Answer);
 
 /// <summary>Explicitly saved data, never credentials or a grant of database access.</summary>
 public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, string AccountId,
-    string? DatabaseTarget, string? ModelId, string Draft, SavedChatMessage[] Messages, JsonElement[] History)
+    string? DatabaseTarget, string? ModelId, string Draft, SavedChatMessage[] Messages, JsonElement[] History, string Provider = "chatgpt")
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     public const int MaximumFileBytes = 16_000_000;
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -43,12 +43,13 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
 
     public void Validate()
     {
-        if (Version != CurrentVersion) throw new InvalidDataException("This chat file uses an unsupported version.");
+        if (Version is not (1 or CurrentVersion) || Provider is not ("chatgpt" or "claude") || (Version == 1 && Provider != "chatgpt")) throw new InvalidDataException("This chat file uses an unsupported version.");
         if (string.IsNullOrWhiteSpace(AccountId) || AccountId.Length > 2000 || DatabaseTarget?.Length > 4000 || ModelId?.Length > 1000 ||
             Draft is null || Draft.Length > AssistantContext.MaximumRequestLength || Messages is null ||
             Messages.Length is < 1 or > AssistantConversation.MaximumExchanges || History is null || History.Length > 2000 ||
             Messages.Any(m => m is null || string.IsNullOrWhiteSpace(m.Question) || m.Question.Length > AssistantContext.MaximumRequestLength || m.Answer is null || m.Answer.Length > 2_000_000) ||
             JsonSerializer.Serialize(History).Length > 4_000_000) throw Invalid();
+        if (Provider == "claude") { ValidateClaude(); return; }
         var users = 0;
         var calls = new HashSet<string>(StringComparer.Ordinal);
         var pending = new HashSet<string>(StringComparer.Ordinal);
@@ -126,6 +127,64 @@ public sealed record SavedAssistantChat(int Version, DateTimeOffset SavedAt, str
             else throw Invalid();
         }
         if (users != Messages.Length || pending.Count != 0 || !answered) throw Invalid();
+    }
+
+    private void ValidateClaude()
+    {
+        var exchanges = 0;
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string? previous = null;
+        var answered = false;
+        foreach (var message in History)
+        {
+            Fields(message, "role", "content");
+            var role = Required(message, "role");
+            if (role is not ("user" or "assistant") || role == previous || (previous is null && role != "user")) throw Invalid();
+            var content = message.GetProperty("content");
+            if (content.ValueKind == JsonValueKind.String)
+            {
+                if (role != "user" || pending.Count != 0 || string.IsNullOrWhiteSpace(content.GetString())) throw Invalid();
+                exchanges++; answered = false;
+            }
+            else if (content.ValueKind == JsonValueKind.Array && content.GetArrayLength() > 0)
+            {
+                var hasText = false;
+                foreach (var block in content.EnumerateArray())
+                {
+                    var type = Required(block, "type");
+                    if (role == "user")
+                    {
+                        Fields(block, "type", "tool_use_id", "content");
+                        if (type != "tool_result" || !pending.Remove(Required(block, "tool_use_id"))) throw Invalid();
+                        Required(block, "content");
+                    }
+                    else if (type == "text")
+                    {
+                        Fields(block, "type", "text");
+                        hasText |= !string.IsNullOrWhiteSpace(Required(block, "text"));
+                    }
+                    else if (type == "tool_use")
+                    {
+                        Fields(block, "type", "id", "name", "input");
+                        if (DatabaseTarget is null || Required(block, "name") is not ("query" or "list_objects" or "describe_object") ||
+                            !seen.Add(Required(block, "id")) || !block.TryGetProperty("input", out var args) || args.ValueKind != JsonValueKind.Object) throw Invalid();
+                        pending.Add(Required(block, "id"));
+                    }
+                    else if (type == "thinking")
+                    {
+                        Fields(block, "type", "thinking", "signature"); Required(block, "thinking"); Required(block, "signature");
+                    }
+                    else if (type == "redacted_thinking") { Fields(block, "type", "data"); Required(block, "data"); }
+                    else throw Invalid();
+                }
+                if (role == "user" && pending.Count != 0) throw Invalid();
+                if (role == "assistant") answered = hasText && pending.Count == 0;
+            }
+            else throw Invalid();
+            previous = role;
+        }
+        if (exchanges != Messages.Length || previous != "assistant" || pending.Count != 0 || !answered) throw Invalid();
     }
 
     private static void CheckDuplicateFields(JsonElement item)

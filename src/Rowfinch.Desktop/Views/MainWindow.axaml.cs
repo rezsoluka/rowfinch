@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<QueryTabViewModel, QueryTabView> views = [];
     private readonly Dictionary<QueryTabViewModel, AssistantWindow> assistants = [];
     private readonly IAssistantClient assistantClient;
+    private readonly IAssistantClient claudeClient;
+    private readonly bool ownsClaudeClient;
     private readonly bool ownsAssistantClient;
     private readonly LocalSettingsStore settings;
     private bool allowClose;
@@ -27,12 +29,14 @@ public partial class MainWindow : Window
     public MainWindow() : this(new WorkspaceViewModel()) { }
 
     public MainWindow(WorkspaceViewModel workspace, bool startInDemo = false, bool showFirstRun = false,
-        LocalSettingsStore? settings = null, IAssistantClient? assistantClient = null)
+        LocalSettingsStore? settings = null, IAssistantClient? assistantClient = null, IAssistantClient? claudeClient = null)
     {
         InitializeComponent();
         this.workspace = workspace;
         this.settings = settings ?? new LocalSettingsStore();
         this.assistantClient = assistantClient ?? new ChatGptAssistantClient(this.settings);
+        ownsClaudeClient = claudeClient is null;
+        this.claudeClient = claudeClient ?? new ClaudeAssistantClient(this.settings);
         ownsAssistantClient = assistantClient is null;
         DataContext = workspace;
         workspace.PropertyChanged += OnWorkspaceChanged;
@@ -71,6 +75,7 @@ public partial class MainWindow : Window
             foreach (var assistant in assistants.Values.ToArray()) assistant.Close();
             assistants.Clear();
             if (ownsAssistantClient) this.assistantClient.Dispose();
+            if (ownsClaudeClient) this.claudeClient.Dispose();
         };
     }
 
@@ -83,7 +88,7 @@ public partial class MainWindow : Window
         if (assistants.TryGetValue(tab, out var existing)) { existing.Activate(); return; }
         // Keep one account/context surface per workspace. Opening another source starts fresh.
         foreach (var previous in assistants.Values.ToArray()) previous.Close();
-        var assistant = new AssistantWindow(assistantClient, workspace, tab, settings);
+        var assistant = new AssistantWindow(assistantClient, workspace, tab, settings, claudeClient);
         assistants.Add(tab, assistant);
         assistant.Closed += (_, _) => assistants.Remove(tab);
         assistant.Show(this);

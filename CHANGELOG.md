@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0-beta.1 — 2026-10-16
+
+- Add Claude alongside ChatGPT, using a user-supplied Anthropic API key, optional workspace ID, live model discovery and streamed answers.
+- Store remembered Claude credentials in their own desktop-keyring schema, with a session-only alternative and explicit Console billing guidance.
+- Keep provider chats and drafts separate in memory; switching providers disables database access and clears sharing choices. Saved chats record the provider and preserve native tool/thinking state, with support for older ChatGPT files.
+- Reuse connection notes, schema inspection and approved read-only queries with Claude, including SQL-policy feedback, cancellation and bounded tool output. Show the selected data recipient in the assistant and query approvals.
+
 ## 0.3.0-beta.2 — 2026-10-16
 
 - Fix false rejection of date-part expressions in weekly/date-filtered SELECTs, TRY_CAST/TRY_CONVERT, and read-only @@DATEFIRST. Preserve write, local-variable, cross-database and unknown-function restrictions.

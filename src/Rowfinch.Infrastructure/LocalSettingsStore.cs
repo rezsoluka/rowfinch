@@ -5,6 +5,7 @@ namespace Rowfinch.Infrastructure;
 public sealed class LocalSettings
 {
     public int SafetyNoticeVersion { get; set; }
+    public Guid? ClaudeCredentialId { get; set; }
     public bool ChatGptWelcomeShown { get; set; }
     public string HostId { get; set; } = "urn:uuid:" + Guid.NewGuid().ToString();
 }

@@ -551,6 +551,76 @@ public sealed class AssistantUiTests
         await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
     }
 
+    [AvaloniaFact]
+    public async Task ProvidersKeepSeparateHistoriesAndNeverCarryDatabaseAccessOrSharingAcross()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "rowfinch-provider-ui-" + Guid.NewGuid().ToString("N"));
+        var settings = new LocalSettingsStore(Path.Combine(directory, "settings.json"));
+        await settings.UpdateAsync(value => value.ChatGptWelcomeShown = true);
+        using var chatGpt = new FakeAssistant(); chatGpt.Release.TrySetResult();
+        using var claude = new FakeAssistant { ProviderId = "claude" }; claude.Release.TrySetResult();
+        await using var workspace = new WorkspaceViewModel(new Profiles());
+        var window = new MainWindow(workspace, settings: settings, assistantClient: chatGpt, claudeClient: claude); window.Show();
+        await workspace.SelectedTab!.StartDemoAsync();
+        Click(window, window.FindControl<Button>("OpenAssistantButton")!);
+        await chatGpt.ModelsLoaded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var assistant = Assert.Single(window.OwnedWindows.OfType<AssistantWindow>());
+        var question = assistant.FindControl<TextBox>("QuestionInput")!;
+        var send = assistant.FindControl<Button>("SendAssistantButton")!;
+        question.Text = "Private ChatGPT question";
+        Click(assistant, send);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SaveChatButton")!.IsEnabled);
+        var savedGpt = assistant.CreateSavedChat(); Assert.Equal("chatgpt", savedGpt.Provider);
+        var selector = assistant.FindControl<ComboBox>("Providers")!;
+        selector.SelectedIndex = 1;
+        await claude.ModelsLoaded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => selector.IsEnabled);
+        Assert.Empty(assistant.FindControl<ItemsControl>("ChatMessages")!.Items);
+        Assert.Contains("Anthropic", assistant.FindControl<TextBlock>("ProviderDisclosure")!.Text);
+        Assert.Contains("Anthropic", assistant.FindControl<CheckBox>("AllowSchemaAccess")!.Content!.ToString());
+        Assert.Equal("Set up API key", assistant.FindControl<Button>("SignInButton")!.Content);
+        Assert.False(assistant.FindControl<CheckBox>("ShareSql")!.IsChecked);
+        Assert.False(assistant.FindControl<CheckBox>("ShareConnectionNotes")!.IsChecked);
+        question.Text = "Private Claude question"; Click(assistant, send);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SaveChatButton")!.IsEnabled);
+        Assert.Equal("Private Claude question", claude.LastRequest); Assert.Empty(claude.LastHistory);
+        var savedClaude = assistant.CreateSavedChat(); Assert.Equal("claude", savedClaude.Provider);
+        Assert.DoesNotContain("Private ChatGPT", System.Text.Json.JsonSerializer.Serialize(savedClaude));
+        question.Text = "Claude draft";
+        selector.SelectedIndex = 0;
+        await WaitUntilAsync(() => selector.IsEnabled);
+        Assert.Single(assistant.FindControl<ItemsControl>("ChatMessages")!.Items);
+        Assert.Equal("Private ChatGPT question", assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>().Single().Question);
+        Assert.Contains("OpenAI", assistant.FindControl<TextBlock>("ProviderDisclosure")!.Text);
+        selector.SelectedIndex = 1;
+        await WaitUntilAsync(() => selector.IsEnabled);
+        Assert.Equal("Claude draft", question.Text);
+        Assert.Equal("Private Claude question", assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>().Single().Question);
+        question.Text = "Claude follow-up"; Click(assistant, send);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SaveChatButton")!.IsEnabled);
+        Assert.Equal(2, claude.LastHistory.Count);
+        Assert.DoesNotContain("Private ChatGPT", System.Text.Json.JsonSerializer.Serialize(claude.LastHistory));
+        // Enabling schema access is explicit; switching providers closes its independent session.
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 2;
+        assistant.FindControl<CheckBox>("AllowSchemaAccess")!.IsChecked = true;
+        Click(assistant, assistant.FindControl<Button>("EnableDatabaseButton")!);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("DisableDatabaseButton")!.IsEnabled && selector.IsEnabled);
+        selector.SelectedIndex = 0;
+        await WaitUntilAsync(() => selector.IsEnabled);
+        Assert.False(assistant.FindControl<Button>("DisableDatabaseButton")!.IsEnabled);
+        // Opening a saved Claude file selects its provider, with access and sharing off.
+        await assistant.RestoreChatAsync(savedClaude);
+        Assert.Equal(1, selector.SelectedIndex);
+        Assert.False(assistant.FindControl<Button>("DisableDatabaseButton")!.IsEnabled);
+        Assert.False(assistant.FindControl<CheckBox>("ShareConnectionNotes")!.IsChecked);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_CLAUDE_SCREENSHOT") is { Length: > 0 } screenshot)
+        {
+            assistant.UpdateLayout(); using var frame = assistant.CaptureRenderedFrame(); Assert.NotNull(frame);
+            frame.Save(screenshot, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        assistant.Close(); window.Close(); Directory.Delete(directory, true);
+    }
+
     private static void Click(Window window, Control control)
     {
         window.UpdateLayout();
@@ -567,6 +637,7 @@ public sealed class AssistantUiTests
     }
     private sealed class FakeAssistant : IAssistantClient
     {
+        public string ProviderId { get; init; } = "chatgpt";
         public AssistantAccount? Account { get; private set; } = new("test-client", "test-user", "person@example.test", true);
         public IReadOnlyList<AssistantAccount> SavedAccounts => Account is { } account ? [account] : [];
         public TaskCompletionSource ModelsLoaded { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -576,7 +647,7 @@ public sealed class AssistantUiTests
         public IReadOnlyList<System.Text.Json.JsonElement> LastHistory { get; private set; } = [];
         public async Task<string> AskConversationAsync(string model, string request, AssistantConversation conversation, AssistantDatabaseTools? database, IProgress<string>? progress, CancellationToken token)
         {
-            using var turn = conversation.Begin(Account!.ClientId, database?.ConversationScope, database?.AllowSchema == true, database?.AllowQueries == true);
+            using var turn = conversation.Begin(Account!.ClientId, database?.ConversationScope, database?.AllowSchema == true, database?.AllowQueries == true, ProviderId);
             LastHistory = turn.Input;
             var answer = database is null ? await AskAsync(model, request, progress, token) : await AskWithDatabaseAsync(model, request, database, progress, token);
             var input = turn.Input.Cast<object>().ToList();
@@ -587,7 +658,8 @@ public sealed class AssistantUiTests
                 input.Add(new { type = "function_call", name = "query", @namespace = "rowfinch", call_id = callId, arguments = "{\"sql\":\"SELECT TOP (10) * FROM dbo.Customers;\"}" });
                 input.Add(new { type = "function_call_output", call_id = callId, output = DatabaseResult });
             }
-            input.Add(new { role = "assistant", content = answer });
+            if (ProviderId == "claude") input.Add(new { role = "assistant", content = new[] { new { type = "text", text = answer } } });
+            else input.Add(new { role = "assistant", content = answer });
             turn.Commit(input);
             return answer;
         }

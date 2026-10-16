@@ -7,6 +7,11 @@
     <StackPanel Spacing="8">
       <TextBlock Text="SQL assistant" FontSize="22" FontWeight="SemiBold" />
       <TextBlock x:Name="SourceLabel" Classes="muted" TextWrapping="Wrap" />
+      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+        <TextBlock Text="Provider" VerticalAlignment="Center" />
+        <ComboBox x:Name="Providers" Grid.Column="1" HorizontalAlignment="Stretch" SelectionChanged="OnProviderChanged" />
+      </Grid>
+      <TextBlock x:Name="ProviderDisclosure" Classes="muted" FontSize="11" TextWrapping="Wrap" />
       <WrapPanel ItemSpacing="8" LineSpacing="6">
         <Button x:Name="SignInButton" Content="Continue with ChatGPT" Click="OnSignIn" />
         <Button x:Name="AddAccountButton" Content="Add account" Click="OnAddAccount" />

@@ -7,6 +7,7 @@ public sealed record AssistantModel(string Id, string DisplayName);
 
 public interface IAssistantClient : IDisposable
 {
+    string ProviderId => "chatgpt";
     AssistantAccount? Account { get; }
     IReadOnlyList<AssistantAccount> SavedAccounts { get; }
     Task InitializeAsync(CancellationToken token);
@@ -19,6 +20,11 @@ public interface IAssistantClient : IDisposable
         => throw new NotSupportedException("This assistant does not support conversation history.");
     Task<string> AskWithDatabaseAsync(string model, string request, AssistantDatabaseTools database, IProgress<string>? progress, CancellationToken token)
         => throw new NotSupportedException("This assistant does not support database access.");
+}
+
+public interface IApiKeyAssistantClient : IAssistantClient
+{
+    Task ConfigureAsync(string apiKey, string? workspaceId, bool remember, CancellationToken token);
 }
 
 public static class AssistantContext

@@ -11,6 +11,7 @@ public sealed class AssistantConversation
     private readonly object sync = new();
     private JsonElement[] history = [];
     private string? account;
+    private string provider = "chatgpt";
     private object? database;
     private bool schema, queries;
     private bool restored;
@@ -20,15 +21,15 @@ public sealed class AssistantConversation
     public int CompletedExchanges { get { lock (sync) return exchanges; } }
     public bool CanContinue { get { lock (sync) return exchanges < MaximumExchanges && length < MaximumInputLength; } }
 
-    public Turn Begin(string accountId, object? databaseScope = null, bool allowSchema = false, bool allowQueries = false)
+    public Turn Begin(string accountId, object? databaseScope = null, bool allowSchema = false, bool allowQueries = false, string providerId = "chatgpt")
     {
         lock (sync)
         {
             if (active is not null) throw new InvalidOperationException("Wait for the current answer or cancel it before sending another message.");
             if (!CanContinue) throw new InvalidOperationException("This chat reached its history limit. Choose New chat to continue.");
-            if (exchanges > 0 && (account != accountId || !ReferenceEquals(database, databaseScope) || schema != allowSchema || queries != allowQueries))
-                throw new InvalidOperationException("The ChatGPT account or database access changed. Choose New chat before sending more context.");
-            account = accountId; database = databaseScope; schema = allowSchema; queries = allowQueries; restored = false;
+            if (exchanges > 0 && (provider != providerId || account != accountId || !ReferenceEquals(database, databaseScope) || schema != allowSchema || queries != allowQueries))
+                throw new InvalidOperationException("The assistant provider, account or database access changed. Choose New chat before sending more context.");
+            provider = providerId; account = accountId; database = databaseScope; schema = allowSchema; queries = allowQueries; restored = false;
             return active = new Turn(this, revision, history.ToArray());
         }
     }
@@ -39,7 +40,7 @@ public sealed class AssistantConversation
         {
             if (active is not null) throw new InvalidOperationException("Wait for the answer before saving the chat.");
             var saved = new SavedAssistantChat(SavedAssistantChat.CurrentVersion, DateTimeOffset.UtcNow,
-                account ?? "", target, model, draft, messages.ToArray(), history.Select(item => item.Clone()).ToArray());
+                account ?? "", target, model, draft, messages.ToArray(), history.Select(item => item.Clone()).ToArray(), provider);
             saved.Validate();
             return saved;
         }
@@ -52,7 +53,7 @@ public sealed class AssistantConversation
         {
             Clear();
             history = saved.History.Select(item => item.Clone()).ToArray();
-            account = saved.AccountId; exchanges = saved.Messages.Length;
+            provider = saved.Provider; account = saved.AccountId; exchanges = saved.Messages.Length;
             length = JsonSerializer.Serialize(history).Length;
             restored = true;
         }
@@ -65,14 +66,14 @@ public sealed class AssistantConversation
         lock (sync)
         {
             if (!restored || active is not null || account != accountId)
-                throw new InvalidOperationException("Open the chat with its original ChatGPT account before enabling database access.");
+                throw new InvalidOperationException("Open the chat with its original assistant account before enabling database access.");
             database = scope; schema = allowSchema; queries = allowQueries; restored = false;
         }
     }
 
     public void Clear()
     {
-        lock (sync) { history = []; restored = false; account = null; database = null; schema = queries = false; exchanges = length = 0; active = null; revision++; }
+        lock (sync) { history = []; provider = "chatgpt"; restored = false; account = null; database = null; schema = queries = false; exchanges = length = 0; active = null; revision++; }
     }
 
     public string LatestQuerySql()
@@ -81,6 +82,13 @@ public sealed class AssistantConversation
         {
             foreach (var item in history.Reverse())
             {
+                if (provider == "claude")
+                {
+                    if (String(item, "role") == "assistant" && item.TryGetProperty("content", out var blocks) && blocks.ValueKind == JsonValueKind.Array)
+                        foreach (var block in blocks.EnumerateArray().Reverse())
+                            if (String(block, "type") == "tool_use" && String(block, "name") == "query" && block.TryGetProperty("input", out var args) && String(args, "sql") is { Length: > 0 } query) return query;
+                    continue;
+                }
                 if (String(item, "type") != "function_call" || String(item, "name") is not ("query" or "rowfinch.query") ||
                     String(item, "namespace") is not (null or "rowfinch") || String(item, "arguments") is not { } arguments) continue;
                 try
@@ -111,7 +119,12 @@ public sealed class AssistantConversation
                     {
                         if (content.ValueKind == JsonValueKind.String) text.AppendLine(content.GetString());
                         else if (content.ValueKind == JsonValueKind.Array)
-                            foreach (var part in content.EnumerateArray()) text.AppendLine(String(part, "text") ?? String(part, "refusal"));
+                            foreach (var part in content.EnumerateArray())
+                            {
+                                if (String(part, "type") == "tool_use") text.AppendLine("DATABASE REQUEST · " + String(part, "name")).AppendLine(part.GetProperty("input").GetRawText());
+                                else if (String(part, "type") == "tool_result") text.AppendLine("DATABASE RESULT").AppendLine(String(part, "content"));
+                                else if (String(part, "type") is not ("thinking" or "redacted_thinking")) text.AppendLine(String(part, "text") ?? String(part, "refusal"));
+                            }
                     }
                     text.AppendLine();
                 }
