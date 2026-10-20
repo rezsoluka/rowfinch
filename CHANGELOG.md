@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0-beta.3 — 2026-10-20
+
+- Replace generic assistant database-tool argument errors with the operation, offending field/type or size limit, and corrective guidance. Return validation feedback to ChatGPT/Claude for correction within the existing tool-call budget, without executing rejected requests or bypassing query approval.
+- Keep failure/cancellation messages with their chat exchanges and expose the last database request issue in an expandable feedback panel, automatically expanded on failure.
+- Include SQL syntax line/column locations and SQL Server error numbers/lines in assistant query failures; advertise argument length limits to both providers.
+
+## 0.5.0-beta.2 — 2026-10-20
+
+- Expand local SQL completion with T-SQL commands, common built-in functions and data types, and phrases such as CREATE TABLE, INSERT INTO, ORDER BY, and BEGIN TRANSACTION.
+- Suggest missing command words after a space, including CREATE OR ALTER and transaction/SET clauses. Prioritize these continuations and insert only the missing words without repeating text already typed.
+
+## 0.5.0-beta.1 — 2026-10-20
+
+- Add local SQL editor completion for database objects, schemas, keywords, and table/view columns, including aliases declared later in the current query.
+- Show suggestions while typing or with Ctrl+Space; use arrows to select, Enter/Tab to insert, and Escape to dismiss. Insert escaped SQL identifiers and preserve editor undo.
+- Reuse each tab's unfiltered metadata cache and lazily load visible columns through its existing session without changing SQL or results. Invalidate suggestions when switching tabs or disconnecting.
+- Keep suggestions out of strings/comments and avoid guessing columns for ambiguous names, CTEs, derived tables, or cross-database references.
+
 ## 0.4.0-beta.1 — 2026-10-16
 
 - Add Claude alongside ChatGPT, using a user-supplied Anthropic API key, optional workspace ID, live model discovery and streamed answers.

@@ -8,6 +8,74 @@ namespace Rowfinch.Tests;
 public sealed class AssistantDatabaseTests
 {
     [Theory]
+    [InlineData("list_objects", "{}", "'filter' field is missing")]
+    [InlineData("list_objects", "{\"filter\":[]}", "'filter' must be text; received an array")]
+    [InlineData("list_objects", "{\"filter\":null}", "'filter' must be text; received null")]
+    [InlineData("list_objects", "[]", "instead of an object")]
+    [InlineData("list_objects", "{", "malformed JSON")]
+    [InlineData("query", "{\"sql\":42,\"reason\":\"check\"}", "'sql' must be text; received a number")]
+    [InlineData("query", "{\"sql\":\"SELECT 1;\"}", "'reason' field is missing")]
+    [InlineData("query", "{\"sql\":\" \",\"reason\":\"check\"}", "'sql' is empty")]
+    [InlineData("describe_object", "{\"schema\":\"dbo\",\"name\":\"\"}", "'name' is empty")]
+    [InlineData("list_objects", "{\"filter\":\"\",\"extra-secret\":\"private-value\"}", "unsupported fields")]
+    [InlineData("list_objects", "{\"filter\":\"\",\"filter\":\"Customers\"}", "'filter' field appears more than once")]
+    public async Task InvalidArgumentsExplainTheFieldAndReturnRecoverableFeedbackWithoutCallingTheDatabase(string tool, string arguments, string expected)
+    {
+        await using var database = new Database { CanQuery = true };
+        var approvals = 0; var activity = new List<string>();
+        var tools = new AssistantDatabaseTools(database, true, (_, _) => { approvals++; return Task.FromResult(true); }, activity.Add);
+        using var result = JsonDocument.Parse(await tools.InvokeAsync(tool, arguments, TestContext.Current.CancellationToken));
+        Assert.Equal("invalid_tool_arguments", result.RootElement.GetProperty("code").GetString());
+        Assert.False(result.RootElement.GetProperty("executed").GetBoolean());
+        var message = result.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains(tool, message); Assert.Contains(expected, message);
+        Assert.Contains("No database request was executed", message);
+        Assert.DoesNotContain("extra-secret", message); Assert.DoesNotContain("private-value", message);
+        Assert.Equal(message, tools.LastRequestIssue); Assert.Contains(message, activity);
+        Assert.Equal(0, approvals); Assert.Equal(0, database.Queries); Assert.Equal(0, database.SchemaCalls);
+        await tools.InvokeAsync("list_objects", "{\"filter\":\"\"}", TestContext.Current.CancellationToken);
+        Assert.Equal(1, database.SchemaCalls);
+    }
+
+    [Theory]
+    [InlineData("filter", 129, "128")]
+    [InlineData("sql", 12001, "12,000")]
+    [InlineData("reason", 1001, "1,000")]
+    public async Task LengthRejectionsReportTheFieldSizeAndLimitWithoutEchoingValues(string field, int length, string limit)
+    {
+        await using var database = new Database { CanQuery = true };
+        var approvals = 0;
+        var tools = new AssistantDatabaseTools(database, true, (_, _) => { approvals++; return Task.FromResult(true); });
+        var text = "private-value-" + new string('x', length - 14);
+        var arguments = field == "filter" ? JsonSerializer.Serialize(new { filter = text }) :
+            JsonSerializer.Serialize(new { sql = field == "sql" ? text : "SELECT 1;", reason = field == "reason" ? text : "Check" });
+        using var result = JsonDocument.Parse(await tools.InvokeAsync(field == "filter" ? "list_objects" : "query", arguments, TestContext.Current.CancellationToken));
+        var message = result.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains("'" + field + "'", message); Assert.Contains("limit is " + limit, message);
+        Assert.DoesNotContain("private-value", message);
+        Assert.Equal(0, approvals); Assert.Equal(0, database.Queries); Assert.Equal(0, database.SchemaCalls);
+    }
+
+    [Fact]
+    public void SqlSyntaxFailuresIdentifyTheLineAndColumn()
+    {
+        var error = Assert.Throws<AssistantSqlPolicyException>(() => ReadOnlySqlPolicy.Validate("SELECT 1\nWHERE (1 = );"));
+        Assert.Contains("SQL syntax error at line 2, column", error.Message);
+    }
+
+    [Fact]
+    public async Task RuntimeFailuresRetainTheDatabaseReasonAndDoNotClaimTheRequestWasNeverExecuted()
+    {
+        await using var database = new Database { CanQuery = true, QueryError = "SQL Server error 207, line 3: Invalid column name 'MissingDate'." };
+        var tools = new AssistantDatabaseTools(database, false, (_, _) => Task.FromResult(true));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => tools.InvokeAsync("query", "{\"sql\":\"SELECT MissingDate FROM dbo.Customers;\",\"reason\":\"Check dates\"}", TestContext.Current.CancellationToken));
+        Assert.Contains("Read-only query (query) failed", error.Message);
+        Assert.Contains("error 207, line 3", error.Message); Assert.Contains("MissingDate", error.Message);
+        Assert.DoesNotContain("No database request was executed", error.Message);
+        Assert.Equal(error.Message, tools.LastRequestIssue); Assert.Equal(1, database.Queries);
+    }
+
+    [Theory]
     [InlineData("SELECT 42;")]
     [InlineData("-- UPDATE is only a comment\n SELECT 'DROP TABLE' AS [text];")]
     [InlineData("SELECT TOP (10) c.CustomerId, COUNT(*) AS Total FROM dbo.Customers c INNER JOIN dbo.Orders o ON c.CustomerId = o.CustomerId WHERE c.Name LIKE 'A%' GROUP BY c.CustomerId HAVING COUNT(*) > 0 ORDER BY c.CustomerId;")]
@@ -183,9 +251,16 @@ public sealed class AssistantDatabaseTests
         public string Target => "Test database";
         public bool CanQuery { get; set; }
         public int Queries { get; private set; }
-        public Task<string> ListObjectsAsync(string filter, CancellationToken token) => Task.FromResult("[]");
-        public Task<string> DescribeObjectAsync(string schema, string name, CancellationToken token) => Task.FromResult("[]");
-        public Task<string> QueryAsync(string sql, CancellationToken token) { Queries++; return Task.FromResult("{\"status\":\"success\"}"); }
+        public string? QueryError { get; init; }
+        public int SchemaCalls { get; private set; }
+        public Task<string> ListObjectsAsync(string filter, CancellationToken token) { SchemaCalls++; return Task.FromResult("[]"); }
+        public Task<string> DescribeObjectAsync(string schema, string name, CancellationToken token) { SchemaCalls++; return Task.FromResult("[]"); }
+        public Task<string> QueryAsync(string sql, CancellationToken token)
+        {
+            Queries++;
+            if (QueryError is { } error) throw new InvalidOperationException(error);
+            return Task.FromResult("{\"status\":\"success\"}");
+        }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

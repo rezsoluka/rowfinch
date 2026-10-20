@@ -6,6 +6,63 @@ namespace Rowfinch.Tests;
 
 public sealed class ObjectBrowserTests
 {
+    [Fact]
+    public async Task CompletionUsesUnfilteredMetadataCachesColumnsAndPreservesTheWorkspace()
+    {
+        var session = new MetadataSession
+        {
+            ColumnsOverride = [new(1, "Name", "nvarchar(20)", true), new(2, "Internal", "int", false, IsHidden: true)]
+        };
+        await using var tab = CreateTab(session);
+        await tab.ConnectAsync();
+        await tab.ExecuteAsync("SELECT 1;");
+        var originalSql = tab.Sql;
+        var result = tab.SelectedResult;
+        tab.ObjectFilter = "missing";
+        tab.ShowProcedures = true;
+        Assert.Empty(tab.Objects);
+        var objects = await tab.GetCompletionsAsync("SELECT * FROM Cu", 16);
+        Assert.Contains(objects!.Items, i => i.InsertionText == "[dbo].[Customers]");
+        const string sql = "SELECT c. FROM dbo.Customers c";
+        var columns = await tab.GetCompletionsAsync(sql, 9);
+        Assert.Equal("[Name]", Assert.Single(columns!.Items).InsertionText);
+        Assert.Equal(1, session.ColumnCalls);
+        await tab.GetCompletionsAsync(sql, 9);
+        Assert.Equal(1, session.ColumnCalls);
+        Assert.Equal(1, session.ExecutionCalls);
+        Assert.Equal(originalSql, tab.Sql);
+        Assert.Same(result, tab.SelectedResult);
+        await tab.RefreshObjectsAsync();
+        await tab.GetCompletionsAsync(sql, 9);
+        Assert.Equal(2, session.ColumnCalls);
+        await tab.DisconnectAsync();
+        var disconnected = await tab.GetCompletionsAsync("SELECT * FROM Cu", 16);
+        Assert.Empty(disconnected!.Items);
+    }
+
+    [Fact]
+    public async Task ConcurrentCompletionsShareAColumnLoadAndRejectALostConnection()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new MetadataSession { ColumnGate = gate };
+        await using var tab = CreateTab(session);
+        await tab.ConnectAsync();
+        const string sql = "SELECT c. FROM dbo.Customers c";
+        var first = tab.GetCompletionsAsync(sql, 9);
+        await session.ColumnsStarted.Task;
+        var second = tab.GetCompletionsAsync(sql, 9);
+        Assert.Equal(1, session.ColumnCalls);
+        gate.SetResult();
+        Assert.Single((await first)!.Items);
+        Assert.Single((await second)!.Items);
+        await tab.RefreshObjectsAsync();
+        session.ColumnGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stale = tab.GetCompletionsAsync(sql, 9);
+        session.LoseConnection();
+        session.ColumnGate.SetResult();
+        Assert.Null(await stale);
+    }
+
     [Theory]
     [InlineData("nvarchar", 400, 0, 0, "nvarchar(200)")]
     [InlineData("nvarchar", -1, 0, 0, "nvarchar(max)")]
@@ -366,6 +423,7 @@ public sealed class ObjectBrowserTests
         public IReadOnlyList<DatabaseColumn>? ColumnsOverride { get; set; }
         public bool WaitForDefinition { get; init; }
         public bool WaitForColumns { get; set; }
+        public TaskCompletionSource? ColumnGate { get; set; }
         public TaskCompletionSource ColumnsStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Definition { get; init; } = "CREATE VIEW [dbo].[CustomerView] AS SELECT 1 AS [Id];";
         public TaskCompletionSource DefinitionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -386,6 +444,7 @@ public sealed class ObjectBrowserTests
         {
             ColumnCalls++;
             ColumnsStarted.TrySetResult();
+            if (ColumnGate is { } gate) await gate.Task.WaitAsync(cancellationToken);
             if (WaitForColumns) await Task.Delay(Timeout.Infinite, cancellationToken);
             if (FailColumns) throw new InvalidOperationException("Metadata denied");
             return ColumnsOverride ?? [new(1, ColumnName, "int", false, 1)];

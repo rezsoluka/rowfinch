@@ -129,6 +129,22 @@ public sealed class ClaudeAssistantTests
         Assert.Contains(fixture.Handler.Requests, request => request.Body?.Contains("Further queries are disabled", StringComparison.Ordinal) == true);
     }
 
+    [Fact]
+    public async Task InvalidArgumentsReturnNativeToolFeedbackAndCorrectionsRequireApproval()
+    {
+        using var fixture = new Fixture(); using var client = fixture.Client(); await client.ConfigureAsync(Key, null, false, Token);
+        fixture.Handler.Answers.Enqueue(Stream("tool_use", Tool("invalid", "query", new { sql = "SELECT 1;" })));
+        fixture.Handler.Answers.Enqueue(Stream("tool_use", Tool("corrected", "query", new { sql = "SELECT 1;", reason = "Check for data" })));
+        fixture.Handler.Answers.Enqueue(Stream("end_turn", Text("The corrected query succeeded.")));
+        var session = new Database(); var approvals = 0;
+        var tools = new AssistantDatabaseTools(session, false, (_, _) => { approvals++; return Task.FromResult(true); });
+        var chat = new AssistantConversation();
+        await client.AskConversationAsync("claude-test", "Check dates", chat, tools, null, Token);
+        Assert.Equal(1, approvals); Assert.Equal(1, session.Queries); Assert.Equal(1, chat.CompletedExchanges);
+        Assert.Contains(fixture.Handler.Requests, request => request.Body?.Contains("invalid_tool_arguments", StringComparison.Ordinal) == true);
+        Assert.Contains("'reason' field is missing", tools.LastRequestIssue);
+    }
+
     [Theory]
     [InlineData("max_tokens")]
     [InlineData("missing_stop")]

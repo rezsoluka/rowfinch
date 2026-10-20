@@ -431,6 +431,25 @@ public sealed class AssistantTests
         Assert.Contains("sql_policy_rejected", JsonSerializer.Serialize(restored.History));
     }
 
+    [Fact]
+    public async Task InvalidToolFieldsAreReturnedForCorrectionAndTheRevisedQueryStillNeedsApproval()
+    {
+        using var fixture = new AuthFixture();
+        fixture.ResponseStreams.Enqueue(ToolResponse("describe_object", "{\"schema\":\"dbo\",\"name\":[\"Customers\"]}"));
+        fixture.ResponseStreams.Enqueue(ToolResponse("query", "{\"sql\":\"SELECT 1;\",\"reason\":\"Check for data\"}"));
+        using var client = fixture.CreateClient();
+        await client.SignInAsync(null, fixture.BrowserAsync, TestContext.Current.CancellationToken);
+        await using var database = new ToolDatabase { CanQuery = true };
+        var approvals = 0;
+        var tools = new AssistantDatabaseTools(database, true, (_, _) => { approvals++; return Task.FromResult(true); });
+        var chat = new AssistantConversation();
+        await client.AskConversationAsync("available-model", "Find tables without 2026 dates", chat, tools, null, TestContext.Current.CancellationToken);
+        Assert.Equal(1, approvals); Assert.Equal(1, database.QueryCalls); Assert.Equal(1, chat.CompletedExchanges);
+        Assert.Contains("invalid_tool_arguments", fixture.RequestBodies[1]);
+        Assert.Contains("must be text", fixture.RequestBodies[1]);
+        Assert.Contains("'name'", tools.LastRequestIssue);
+    }
+
     private static string ToolResponse(string name, string arguments) => "data: " + JsonSerializer.Serialize(new
     {
         type = "response.completed", response = new { status = "completed", output = new object[]

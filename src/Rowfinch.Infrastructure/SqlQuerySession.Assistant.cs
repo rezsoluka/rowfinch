@@ -70,6 +70,12 @@ public sealed partial class SqlQuerySession
         try { return await ExecuteReadOnlyCoreAsync(sql, timeout.Token); }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         { throw new InvalidOperationException("The assistant query exceeded its 15 second timeout. Narrow the query and try again."); }
+        catch (SqlException error) when (!token.IsCancellationRequested)
+        {
+            var details = error.Errors.Cast<SqlError>().Take(5).Select(detail =>
+                $"SQL Server error {detail.Number}" + (detail.LineNumber > 0 ? $", line {detail.LineNumber}" : "") + ": " + detail.Message);
+            throw new InvalidOperationException(string.Join("\n", details), error);
+        }
         finally
         {
             // ROWCOUNT is connection state, so it must not cap subsequent metadata reads.

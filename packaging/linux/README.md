@@ -7,7 +7,7 @@ Rowfinch packages include the .NET runtime, the app, a `rowfinch` command, a des
 From the repository root:
 
 ```bash
-sudo apt install ./artifacts/packages/rowfinch_0.4.0~beta.1_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.5.0~beta.3_amd64.deb
 rowfinch
 ```
 
@@ -57,13 +57,26 @@ docker build --progress=plain -f packaging/linux/Dockerfile -t rowfinch-package-
 By default it reinstalls the same version. To exercise an actual version upgrade, first build a temporary next-version package, then provide it:
 
 ```bash
-./scripts/build-deb.sh --version 0.4.0-beta.2
+./scripts/build-deb.sh --version 0.5.0-beta.4
 docker build --progress=plain -f packaging/linux/Dockerfile \
-  --build-arg UPGRADE_PACKAGE=rowfinch_0.4.0~beta.2_amd64.deb \
+  --build-arg UPGRADE_PACKAGE=rowfinch_0.5.0~beta.4_amd64.deb \
   -t rowfinch-package-test .
 ```
 
 `--build-arg UBUNTU_VERSION=26.04` selects a newer Ubuntu base. The host's Docker daemon must be accessible. Alternatively, on a disposable Ubuntu VM, install the package and `xvfb xauth dbus-daemon dbus-x11 x11-utils desktop-file-utils`, then run `bash packaging/linux/test-installed.sh`. This helper creates only its own temporary demo configuration and never contacts Azure.
+
+### Acceptance reported on 2026-10-20
+
+For 0.4.0-beta.1, the maintainer confirmed that the proposed manual acceptance pass completed successfully and reported ongoing use without issues. The pass covered:
+
+- Installed Ubuntu launcher, icon/window grouping, and demo workspace.
+- Live Azure metadata, object previews, definitions, and generated SELECT tabs.
+- Query cancellation and connection recovery, plus Entra MFA.
+- ChatGPT and Claude sign-in/setup, questions and follow-ups, cancellation, saved chats, sharing previews, and approved/declined read-only queries.
+
+These are maintainer-reported results. The report did not include per-step logs or exact Ubuntu/database versions. The detailed checklists below remain available for future regression passes; this summary does not claim every error-path scenario in them was individually exercised. ARM64 packaging remains unverified.
+
+Local automated verification on the same date: build passed with zero warnings/errors; 249 tests passed and one opt-in native-keyring test was skipped; the 0.4.0-beta.1 amd64 package checksum and package version were verified.
 
 ### Validation recorded on 2026-10-15
 
@@ -75,7 +88,7 @@ docker build --progress=plain -f packaging/linux/Dockerfile \
 - APT's install simulation on the Ubuntu 26.04 development desktop found all dependencies already satisfied.
 - Application regression suite: 68 passed, one opt-in native-keyring integration test skipped.
 
-Docker access was unavailable on the development machine; the clean installation and lifecycle checks ran using an unprivileged Bubblewrap namespace instead. A full GNOME desktop menu/favorite check, browser sign-in, and a live Azure metadata smoke test remain manual checks.
+Docker access was unavailable on the development machine; the clean installation and lifecycle checks ran using an unprivileged Bubblewrap namespace instead. At that time, a full GNOME desktop menu/favorite check, browser sign-in, and a live Azure metadata smoke test were still pending; see the later acceptance record above.
 
 ## Live desktop and Azure smoke test
 
@@ -86,6 +99,24 @@ Docker access was unavailable on the development machine; the clean installation
 5. Run `WAITFOR DELAY '00:00:15'; SELECT 1;`, cancel with Escape, and confirm that a later SELECT still works. Validate Entra MFA separately if you use it.
 
 These checks do not require changing database objects. Use a database/account appropriate for the data you intend to preview.
+
+## SQL completion acceptance checks (0.5.0-beta.2)
+
+1. In demo mode, type `SELECT * FROM Cu` and press Ctrl+Space. Select Customers with Enter or Tab; verify `[dbo].[Customers]` is inserted without running SQL. Undo the insertion.
+2. Type `SELECT c. FROM dbo.Customers AS c`, with the caret immediately after the dot. Verify CustomerId, Name, and Email are offered without expanding Customers in the sidebar. Insert a column and verify the suffix and surrounding SQL remain intact.
+3. Try schema-qualified names, a JOIN with two aliases, procedure names after EXEC, and bracketed identifiers. Filter the sidebar to hide the table and confirm editor completion still finds it.
+4. Verify strings/comments do not open suggestions, Escape dismisses without editing, and Ctrl+Enter/F5 still run the current query. Switch tabs or disconnect while a list is open and confirm it closes.
+5. Repeat with a live Azure table/view under the intended metadata permissions. Change schema in a test database, refresh its columns, and verify suggestions update. Confirm SQL and results are preserved when metadata is unavailable or cancelled.
+6. Disconnect, type `CRE`, and choose CREATE TABLE. Verify Tab/Enter insert the phrase without running SQL, and Undo restores the prefix. Try INSERT INTO, DROP TABLE, and BEGIN TRANSACTION.
+7. Type `ORDER ` and select BY, then try `CREATE OR ` and select ALTER PROCEDURE. Verify the completed commands contain no repeated words and that Escape dismisses the list without editing. Check that comments, strings, and qualified column lists do not offer SQL commands.
+
+## Assistant diagnostics acceptance checks (0.5.0-beta.3)
+
+1. In the assistant, request a query that is blocked by the read-only policy. Check that the feedback explains the restriction and remains available if the answer fails. A corrected query must still require approval.
+2. With an appropriate test database, approve a SELECT containing a misspelled column. Verify the chat and Database access activity retain the SQL Server reason, number, and line when available; the failed exchange must not enter follow-ups.
+3. Cancel a streaming answer and confirm its cancellation message stays beside the partial answer. Send another question and verify the earlier error remains attached to the earlier exchange.
+
+Automated tests simulate malformed/missing/oversized tool arguments and provider corrections without live credentials. They verify that validation failures call neither the database nor query approval, and that the field-specific feedback is visible in the failed chat.
 
 ## Preview acceptance checks (0.2.0-beta.2)
 
@@ -128,4 +159,4 @@ Use demo mode for initial UI/template checks, then verify metadata and generated
 3. Ask a question, follow up, save/reopen a Claude chat and follow up again. Confirm schema tools and every new query use the same permission/approval limits as ChatGPT. Decline a query and verify nothing executes. Cancel during streaming or approval; partial turns must not enter follow-ups.
 4. Switch between ChatGPT and Claude with completed chats and drafts. Confirm separate histories, recipient-specific approval text, database access off after switching, and sharing options off. Return to each chat and verify the other provider's content is absent. Open an older ChatGPT chat file and confirm it remains usable.
 
-Automated Claude tests use simulated HTTP and a fake keyring. Live Claude billing, account permissions, network service and inference require a user-supplied key and remain manual checks.
+Automated Claude tests use simulated HTTP and a fake keyring. Live Claude billing, account permissions, network service and inference require a user-supplied key and manual validation; see the acceptance record above for the reported live pass.

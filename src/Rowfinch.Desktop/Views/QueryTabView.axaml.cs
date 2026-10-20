@@ -33,12 +33,15 @@ public partial class QueryTabView : UserControl
         using var highlighting = XmlReader.Create(new StringReader(SqlHighlighting));
         SqlEditor.SyntaxHighlighting = HighlightingLoader.Load(highlighting, HighlightingManager.Instance);
         SqlEditor.TextChanged += (_, _) => workspace.Sql = SqlEditor.Text;
+        InitializeCompletion();
         workspace.PropertyChanged += OnWorkspaceChanged;
         ShowResult(workspace.SelectedResult);
     }
 
     private void OnWorkspaceChanged(object? sender, PropertyChangedEventArgs args)
     {
+        if (args.PropertyName == nameof(workspace.IsConnected) && !workspace.IsConnected ||
+            args.PropertyName == nameof(workspace.IsClosing) && workspace.IsClosing) CloseCompletion();
         if (args.PropertyName == nameof(workspace.Sql) && SqlEditor.Text != workspace.Sql) SqlEditor.Text = workspace.Sql;
         if (args.PropertyName == nameof(workspace.SelectedResult)) ShowResult(workspace.SelectedResult);
     }
@@ -88,8 +91,13 @@ public partial class QueryTabView : UserControl
 
     public async Task HandleShortcutAsync(KeyEventArgs args)
     {
+        if (args.Handled) return;
+        if (SqlEditor.IsKeyboardFocusWithin && args.Key == Key.Space && args.KeyModifiers == KeyModifiers.Control)
+        { args.Handled = true; await ShowCompletionAsync(true); return; }
+        if (args.Key == Key.Escape && (completionWindow is not null || completionDelay is not null))
+        { args.Handled = true; CloseCompletion(); return; }
         if (args.Key == Key.F5 || args.Key == Key.Enter && args.KeyModifiers.HasFlag(KeyModifiers.Control))
-        { args.Handled = true; await RunQueryAsync(); }
+        { args.Handled = true; CloseCompletion(); await RunQueryAsync(); }
         else if (args.Key == Key.Escape && workspace.IsBusy) { args.Handled = true; workspace.Cancel(); }
         else if (args.KeyModifiers.HasFlag(KeyModifiers.Control) && args.Key == Key.O)
         { args.Handled = true; OpenSqlRequested?.Invoke(this, EventArgs.Empty); }
@@ -220,7 +228,11 @@ public partial class QueryTabView : UserControl
         menu.Open(control);
     }
 
-    public void Detach() => workspace.PropertyChanged -= OnWorkspaceChanged;
+    public void Detach()
+    {
+        workspace.PropertyChanged -= OnWorkspaceChanged;
+        DetachCompletion();
+    }
 
     private const string SqlHighlighting = """
         <SyntaxDefinition name="SQL" extensions=".sql" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">

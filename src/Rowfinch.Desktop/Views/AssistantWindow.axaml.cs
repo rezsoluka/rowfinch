@@ -295,6 +295,7 @@ public partial class AssistantWindow : Window
             var entry = new AssistantChatEntry(question);
             latestEntry = pendingEntry = entry; messages.Add(entry); RefreshButtons(); ScrollChat(true);
             AssistantStatus.Text = ProviderName + (IsClaude ? " API · receiving answer…" : " plan · receiving answer…");
+            var tools = database is { } access ? new AssistantDatabaseTools(access, AllowSchemaAccess.IsChecked == true, ApproveQueryAsync, AddDatabaseActivity) : null;
             try
             {
                 var progress = new Progress<string>(delta =>
@@ -302,7 +303,6 @@ public partial class AssistantWindow : Window
                     if (!token.IsCancellationRequested && revision == conversation.Revision && ReferenceEquals(pendingEntry, entry))
                     { entry.Answer += delta; ScrollChat(); }
                 });
-                var tools = database is { } access ? new AssistantDatabaseTools(access, AllowSchemaAccess.IsChecked == true, ApproveQueryAsync, AddDatabaseActivity) : null;
                 var answer = await client.AskConversationAsync(model.Id, request, conversation, tools, progress, token);
                 token.ThrowIfCancellationRequested();
                 if (revision != conversation.Revision) return;
@@ -311,9 +311,23 @@ public partial class AssistantWindow : Window
                 RefreshConversationInfo(); ScrollChat();
                 AssistantStatus.Text = conversation.CanContinue ? "Completed. Ask a follow-up or start a new chat." : "This chat reached its history limit. Choose New chat to continue.";
             }
-            catch (OperationCanceledException) { entry.Status = "Assistant · cancelled; not included in follow-ups"; throw; }
-            catch (Exception) { entry.Status = "Assistant · failed; not included in follow-ups"; throw; }
-            finally { if (ReferenceEquals(pendingEntry, entry)) pendingEntry = null; }
+            catch (OperationCanceledException)
+            {
+                entry.Status = "Assistant · cancelled; not included in follow-ups";
+                entry.Error = "Request cancelled. Any displayed answer may be partial and is not used in follow-ups.";
+                ScrollChat(); throw;
+            }
+            catch (Exception error)
+            {
+                entry.Status = "Assistant · failed; not included in follow-ups";
+                entry.Error = AssistantErrorMessage(error);
+                ScrollChat(); throw;
+            }
+            finally
+            {
+                entry.DatabaseFeedback = tools?.LastRequestIssue ?? "";
+                if (ReferenceEquals(pendingEntry, entry)) pendingEntry = null;
+            }
         }, revision);
     }
 
@@ -455,7 +469,7 @@ public partial class AssistantWindow : Window
         operation = cancellation; AssistantStatus.Text = "Working…"; RefreshButtons();
         try { await action(cancellation.Token); }
         catch (OperationCanceledException) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = "Cancelled. Any displayed answer may be partial and is not used in follow-ups."; }
-        catch (Exception error) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = error is HttpRequestException ? $"Could not reach {Recipient}. Check your network connection and try again." : error.Message; }
+        catch (Exception error) { if (chatRevision is null || chatRevision == conversation.Revision) AssistantStatus.Text = AssistantErrorMessage(error); }
         finally
         {
             cancellation.Cancel(); operation = null;
@@ -464,6 +478,12 @@ public partial class AssistantWindow : Window
             UpdateAccounts(client.SavedAccounts.Count > accountCount);
             RefreshButtons();
         }
+    }
+
+    private string AssistantErrorMessage(Exception error)
+    {
+        var message = error is HttpRequestException ? $"Could not reach {Recipient}. Check your network connection and try again." : error.Message;
+        return message.Length <= 2000 ? message : message[..2000] + "…";
     }
     private async void OnEnableDatabase(object? sender, RoutedEventArgs args) => await RunAsync(async token =>
     {

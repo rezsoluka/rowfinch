@@ -10,7 +10,7 @@ The self-contained `.deb` includes .NET, a desktop launcher, and the Rowfinch ic
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./artifacts/packages/rowfinch_0.4.0~beta.1_amd64.deb
+sudo apt install ./artifacts/packages/rowfinch_0.5.0~beta.3_amd64.deb
 rowfinch
 ```
 
@@ -42,6 +42,7 @@ dotnet run --project src/Rowfinch.Desktop -- --demo
 ## Implemented
 
 - Multiple query tabs with independent SQL sessions, SQL highlighting, selection execution, `Ctrl+Enter`/`F5`, and SQL file open/save.
+- Local SQL completion for database objects, schemas, SQL commands/phrases, functions, data types, and alias-qualified table/view columns, with `Ctrl+Space` and automatic suggestions while typing.
 - Per-tab editor undo/selection, results, messages, row limits, timeouts, execution status, cancellation, and transaction state.
 - Save/discard/cancel decisions when closing unsaved tabs, and confirmation before cancelling operations or closing open transactions.
 - SQL-password and Microsoft Entra browser authentication.
@@ -80,6 +81,18 @@ SQL passwords for active connections are retained privately in memory so additio
 Closing an unsaved tab offers **Save and close**, **Close without saving**, and **Cancel**. Cancelling the save dialog keeps the tab open. Closing the application collects every required decision before cancelling any queries or disposing any sessions. If you cancel a later tab's close prompt, all tabs and sessions remain open (documents already saved remain saved). Closing the final tab creates a new, empty disconnected document. Tabs are not restored across application restarts yet.
 
 Connection profiles are stored at `$XDG_CONFIG_HOME/rowfinch/connections.json`, or `~/.config/rowfinch/connections.json` when XDG_CONFIG_HOME is unset or relative. The file contains connection metadata and the remember-password preference, never the password or access token. Existing profile files load with remembering disabled by default. Entra authentication requires your user to have database access and the server to be configured for it. The Microsoft identity provider handles browser sign-in.
+
+## SQL completion
+
+Type an object name or press `Ctrl+Space` in the SQL editor to open suggestions. After `FROM`, `JOIN`, `UPDATE`, or `INSERT INTO`, the list offers tables, views, and functions; after `EXEC`/`EXECUTE`, it offers procedures. Type `dbo.` to narrow suggestions to a schema. Outside those positions, SQL keywords, commands, common built-in functions, data types, and database objects are available too.
+
+Command completion includes multiword phrases: type `CRE` to choose `CREATE TABLE`, `INS` for `INSERT INTO`, or `BEG` for `BEGIN TRANSACTION`. After a command word and space, missing words are suggested automatically: `ORDER ` offers `BY`, `CREATE ` offers `TABLE`, `VIEW`, and other object kinds, and `CREATE OR ` offers `ALTER PROCEDURE` and related phrases. These suggestions insert only the missing text. SQL command completion works without a database connection.
+
+For columns, use a table or alias followed by a dot, for example `SELECT c. FROM dbo.Customers AS c`. The alias can be declared after the caret. Unqualified column suggestions also use tables/views referenced in the current query. Use the arrow keys to choose a suggestion, `Enter` or `Tab` to insert it, and `Escape` to dismiss the list. Inserting a suggestion never runs SQL and can be undone normally. Identifiers are escaped with SQL brackets, including names containing spaces or closing brackets.
+
+Completion uses the current tab's entire discovered object list, independently of sidebar filters. Column metadata loads on demand through that tab's existing database session, with the same permissions and cancellation controls as object browsing; the editor and query results are preserved. Cached metadata remains available while a query runs; new column loads wait until the session is idle and completion is requested again. Use **Refresh columns** or the object-list **Refresh** after schema changes. Completion is local and sends no data to an AI service.
+
+Suggestions are suppressed inside SQL strings/comments and for variable/temporary-table names. This is completion for catalog objects, not a full SQL binder: CTE/derived-table projections, temporary-table columns, cross-database names, and table-valued-function result columns are not inferred. Ambiguous unqualified table names require a schema for column suggestions. Keywords remain available when disconnected. The 0.4.0 acceptance record below predates this feature; rerun the completion acceptance checks in the packaging guide for 0.5.0.
 
 ## Sidebar and object browser
 
@@ -127,7 +140,7 @@ Choose **Provider → ChatGPT** for the existing browser sign-in, or **Provider 
 3. Select an available model and ask a question. Claude supports the same follow-ups, connection notes, schema inspection, and per-query approvals described below. **Manage usage** opens Claude Console. API requests use Console credits/billing and can incur charges; review your spending limits there.
 4. **Remove API key** removes Rowfinch's stored credential. To revoke the key itself, disable or delete it in Claude Console. Keys never go into profiles, notes, saved chats or settings. A nonsecret, one-way key/workspace identifier binds chats to the same credential; re-entering the same session-only key/workspace can resume its saved chats. Changing the key or workspace requires a new chat.
 
-The implementation calls Anthropic's [Messages API](https://platform.claude.com/docs/en/build-with-claude/working-with-messages) directly and follows its [authentication](https://platform.claude.com/docs/en/manage-claude/authentication), [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [tool-use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview) contracts. It does not use Claude browser or CLI credentials. Automated tests simulate Claude HTTP responses and the keyring; a real key and first live query remain manual acceptance checks.
+The implementation calls Anthropic's [Messages API](https://platform.claude.com/docs/en/build-with-claude/working-with-messages) directly and follows its [authentication](https://platform.claude.com/docs/en/manage-claude/authentication), [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), and [tool-use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview) contracts. It does not use Claude browser or CLI credentials. Automated tests simulate Claude HTTP responses and the keyring. The maintainer reported successful live assistant acceptance checks on 2026-10-20; see the [acceptance record](packaging/linux/README.md#acceptance-reported-on-2026-10-20).
 
 ### ChatGPT setup
 
@@ -148,6 +161,8 @@ You can view a saved chat without signing in. To send follow-ups, use the origin
 
 Use **New chat** to clear the conversation, its attached snapshots and the activity view. Any enabled database access remains available, with approval still required for each new query. Changing the ChatGPT account, source database connection or database access starts a fresh conversation. Closing the assistant clears its in-memory chat. Chats are saved only when you choose **Save chat**; no history is imported from ChatGPT. Cancelled/failed answers stay visibly marked in the chat but are excluded from follow-up context. Long chats are limited to 20 completed exchanges and approximately 1,000,000 serialized input characters; the app asks for New chat rather than silently discarding earlier context. The latest completed answer remains available when that limit is reached.
 
+Failures and cancellations keep their explanation beside the affected answer. **Database request feedback** shows the last rejected or failed database request and opens automatically when the exchange fails. Argument validation identifies missing/empty fields, incorrect types, malformed requests, and character limits (128 for filters/schema/object names, 12,000 for SQL, 1,000 for the approval reason). Rejected arguments execute no database request and return corrective feedback to the assistant within the same eight-call budget; corrected queries still require approval. SQL syntax errors include a line/column; SQL Server failures retain their error number and line when available. The Database access activity view also retains the details for this window. Failed exchanges and their local error cards are not included in saved chats or follow-ups.
+
 ### Live schema and read-only queries
 
 In **Assistant → Database access**:
@@ -164,7 +179,7 @@ Queries also pass Microsoft's T-SQL parser with a restricted grammar: one SELECT
 
 ChatGPT access, refresh, and ID tokens are stored in a dedicated `org.rowfinch.ChatGptSession` desktop-keyring entry, separate from SQL passwords. An unlocked Secret Service keyring and browser are required. The host identifier and notice preferences live in `settings.json` beside the connection profiles. ChatGPT requires no API key, client secret, shell agent, or additional runtime. JWT signature, issuer, audience, expiry, issued-at time, nonce, and returning-account identity are checked. Refreshes are serialized across assistant windows/processes. Sign out attempts remote revocation, clears that account's local tokens, and retains its registration for reauthorization; an unconfirmed revocation is reported explicitly. Closing the application keeps saved ChatGPT sessions for later use.
 
-The implementation follows OpenAI's [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in), [plan usage requirements](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations), and [usage UI guidance](https://developers.openai.com/siwc/ui-ux-guidelines). Automated tests use local callbacks, signed test identities, simulated HTTP, and a fake keyring. A live browser sign-in and first inference with an eligible account remain manual acceptance checks.
+The implementation follows OpenAI's [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in), [plan usage requirements](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations), and [usage UI guidance](https://developers.openai.com/siwc/ui-ux-guidelines). Automated tests use local callbacks, signed test identities, simulated HTTP, and a fake keyring. The maintainer reported successful live assistant acceptance checks on 2026-10-20; see the [acceptance record](packaging/linux/README.md#acceptance-reported-on-2026-10-20).
 
 ## Password keyring
 
@@ -197,14 +212,12 @@ Keyring regression tests use an in-memory credential store and verify authentica
 dotnet test Rowfinch.slnx --filter FullyQualifiedName~NativeKeyringStoresLooksUpUpdatesAndForgetsOnlyItsTestProfile --environment ROWFINCH_KEYRING_TEST=1
 ```
 
-A live Azure connection and SELECT have been manually verified on the target Ubuntu desktop. The new metadata queries and object actions still need a live Azure smoke test; automated metadata tests use controlled sessions and demo mode. Entra MFA and server cancellation still require separate integration checks. No database credentials are bundled, and automated tests do not access Azure.
+On 2026-10-20, the maintainer reported that the proposed Ubuntu desktop, live Azure metadata, Entra MFA, cancellation/recovery, and ChatGPT/Claude acceptance checks passed, with no issues found during ongoing use. See the [0.4.0 acceptance record](packaging/linux/README.md#acceptance-reported-on-2026-10-20). Local verification for 0.5.0-beta.3 also passed: build with zero warnings/errors, 331 tests passed and one opt-in native-keyring test skipped, and the current amd64 package checksum verified. No database credentials are bundled, and automated tests do not access Azure.
 
 ## Next milestones
 
-1. Validate Entra MFA and real-server cancellation on the target Ubuntu desktop.
-2. Smoke-test object metadata, definitions, and previews against Azure with the intended database permissions.
-3. Validate the installed launcher and Entra sign-in on a full Ubuntu desktop; test ARM64 packaging when hardware is available.
-4. Add optional query history and SQLCMD script execution.
+1. Test ARM64 packaging when hardware is available.
+2. Add optional query history and SQLCMD script execution.
 
 The core models, SQL batch parser, and export code live in `Rowfinch.Core`; connection handling and profile persistence live in `Rowfinch.Infrastructure`; Avalonia views and view models live in `Rowfinch.Desktop`.
 

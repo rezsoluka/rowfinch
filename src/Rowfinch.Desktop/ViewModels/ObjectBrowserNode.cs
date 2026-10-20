@@ -59,9 +59,15 @@ public sealed class ObjectBrowserNode : ObservableModel
         }
     }
 
-    public async Task LoadColumnsAsync(bool refresh = false)
+    public Task LoadColumnsAsync(bool refresh = false)
     {
-        if (loading || Object?.HasColumns != true || !refresh && Columns is not null) return;
+        if (loading) return LoadTask;
+        if (Object?.HasColumns != true || !refresh && Columns is not null) return Task.CompletedTask;
+        return LoadTask = LoadColumnsCoreAsync();
+    }
+
+    private async Task LoadColumnsCoreAsync()
+    {
         loading = true;
         Children.Clear(); Children.Add(new("Loading columns…", ""));
         try

@@ -533,7 +533,10 @@ public sealed class AssistantUiTests
         Assert.Empty(assistant.OwnedWindows.OfType<AssistantQueryApprovalDialog>());
         Assert.Contains("sql_policy_rejected", client.DatabaseResult);
         Assert.False(assistant.FindControl<Button>("SaveChatButton")!.IsEnabled);
-        Assert.Contains("failed", Assert.Single(assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>()).Status);
+        var failed = Assert.Single(assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>());
+        Assert.Contains("failed", failed.Status);
+        Assert.True(failed.HasError); Assert.Contains("failed after receiving policy feedback", failed.Error);
+        Assert.Contains("SQL policy", failed.DatabaseFeedback);
         Click(assistant, assistant.FindControl<Button>("OpenSqlButton")!);
         var review = workspace.SelectedTab!; await review.ConnectionReady;
         Assert.Equal(client.QuerySql, review.Sql); Assert.True(review.IsDirty); Assert.Empty(review.Results);
@@ -541,6 +544,45 @@ public sealed class AssistantUiTests
         Click(assistant, assistant.FindControl<Button>("NewChatButton")!);
         Assert.False(assistant.FindControl<Button>("OpenSqlButton")!.IsEnabled);
         source.MarkSaved(source.DocumentName); assistant.Close(); window.Close(); Directory.Delete(directory, true);
+    }
+
+    [AvaloniaFact]
+    public async Task InvalidDatabaseArgumentsRemainVisibleWithTheFailedExchange()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "rowfinch-tool-error-ui-" + Guid.NewGuid().ToString("N"));
+        var settings = new LocalSettingsStore(Path.Combine(directory, "settings.json"));
+        await settings.UpdateAsync(value => value.ChatGptWelcomeShown = true);
+        using var client = new FakeAssistant { SchemaArguments = "{\"schema\":\"dbo\",\"name\":[\"Customers\"]}" };
+        await using var workspace = new WorkspaceViewModel(new Profiles());
+        var window = new MainWindow(workspace, settings: settings, assistantClient: client); window.Show();
+        var source = workspace.SelectedTab!; await source.StartDemoAsync();
+        Click(window, window.FindControl<Button>("OpenAssistantButton")!);
+        await client.ModelsLoaded.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var assistant = Assert.Single(window.OwnedWindows.OfType<AssistantWindow>());
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 2;
+        Click(assistant, assistant.FindControl<CheckBox>("AllowSchemaAccess")!);
+        Click(assistant, assistant.FindControl<Button>("EnableDatabaseButton")!);
+        assistant.FindControl<TabControl>("AssistantTabs")!.SelectedIndex = 0;
+        assistant.FindControl<TextBox>("QuestionInput")!.Text = "Tables with no 2026 dates";
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Click(assistant, assistant.FindControl<Button>("SendAssistantButton")!);
+        await WaitUntilAsync(() => assistant.FindControl<Button>("SendAssistantButton")!.IsEnabled);
+        var entry = Assert.Single(assistant.FindControl<ItemsControl>("ChatMessages")!.Items.Cast<AssistantChatEntry>());
+        Assert.True(entry.HasError); Assert.Contains("stopped", entry.Error);
+        Assert.Contains("describe_object", entry.DatabaseFeedback);
+        Assert.Contains("'name' must be text; received an array", entry.DatabaseFeedback);
+        Assert.Contains("No database request was executed", entry.DatabaseFeedback);
+        Assert.Contains("must be text", assistant.FindControl<TextBox>("DatabaseActivity")!.Text);
+        assistant.UpdateLayout();
+        var details = Assert.Single(assistant.GetVisualDescendants().OfType<Expander>(), e => Equals(e.Header, "Database request feedback"));
+        Assert.True(details.IsExpanded);
+        Assert.Contains(assistant.GetVisualDescendants().OfType<SelectableTextBlock>(), text => text.Text == entry.Error && text.IsVisible);
+        if (Environment.GetEnvironmentVariable("ROWFINCH_ASSISTANT_ERROR_SCREENSHOT") is { Length: > 0 } screenshot)
+        {
+            using var frame = assistant.CaptureRenderedFrame(); Assert.NotNull(frame);
+            frame.Save(screenshot, Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+        }
+        assistant.Close(); window.Close(); Directory.Delete(directory, true);
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate)
@@ -644,6 +686,7 @@ public sealed class AssistantUiTests
         public TaskCompletionSource AskStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? LastRequest { get; private set; }
+        public string? SchemaArguments { get; init; }
         public IReadOnlyList<System.Text.Json.JsonElement> LastHistory { get; private set; } = [];
         public async Task<string> AskConversationAsync(string model, string request, AssistantConversation conversation, AssistantDatabaseTools? database, IProgress<string>? progress, CancellationToken token)
         {
@@ -685,6 +728,11 @@ public sealed class AssistantUiTests
         public async Task<string> AskWithDatabaseAsync(string model, string request, AssistantDatabaseTools database, IProgress<string>? progress, CancellationToken token)
         {
             LastRequest = request; AskStarted.TrySetResult();
+            if (SchemaArguments is { } arguments)
+            {
+                DatabaseResult = await database.InvokeAsync("describe_object", arguments, token);
+                throw new InvalidOperationException("The assistant stopped after receiving database request feedback.");
+            }
             if (database.AllowSchema) await database.InvokeAsync("describe_object", "{\"schema\":\"dbo\",\"name\":\"Customers\"}", token);
             QueryRequested.TrySetResult();
             DatabaseResult = await database.InvokeAsync("query", System.Text.Json.JsonSerializer.Serialize(new { sql = QuerySql, reason = "Get a small sample of customers." }), token);

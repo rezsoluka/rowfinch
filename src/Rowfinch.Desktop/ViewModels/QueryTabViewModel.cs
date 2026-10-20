@@ -554,6 +554,33 @@ public sealed class QueryTabViewModel : ObservableModel, IAsyncDisposable
     private IObjectMetadataSession Metadata => session as IObjectMetadataSession
         ?? throw new InvalidOperationException("Object metadata is unavailable for this session.");
 
+    public async Task<SqlCompletionContext?> GetCompletionsAsync(string text, int offset)
+    {
+        var snapshot = allObjects.ToArray();
+        var context = SqlCompletion.Analyze(text, offset,
+            IsConnected && !IsClosing ? snapshot.Select(n => n.Object!).ToArray() : []);
+        if (context is null) return null;
+        var items = context.Items.ToList();
+        foreach (var source in context.ColumnSources)
+        {
+            var node = snapshot.First(n => n.Object == source);
+            if (node.Columns is null && (CanExecute || !node.LoadTask.IsCompleted)) await node.LoadColumnsAsync();
+            if (!IsConnected || IsClosing || !allObjects.SequenceEqual(snapshot)) return null;
+            if (node.Columns is { } columns)
+                items.AddRange(columns.Where(c => !c.IsHidden).Select(c => context.Column(source, c)));
+        }
+        // A reconnect or full object refresh invalidates the entire metadata snapshot.
+        if (!allObjects.SequenceEqual(snapshot)) return null;
+        return context with
+        {
+            Items = items.Where(i => i.Text.StartsWith(context.Prefix, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(i => i.IsCommandContinuation ? 0 : i.IsSql ? 2 : 1)
+                .DistinctBy(i => (i.Text, i.InsertionText))
+                .OrderBy(i => i.IsCommandContinuation ? 0 : i.IsSql ? 2 : 1)
+                .ThenBy(i => i.Text, StringComparer.OrdinalIgnoreCase).ToArray()
+        };
+    }
+
     private async Task<IReadOnlyList<DatabaseColumn>?> LoadColumnsAsync(ObjectBrowserNode node)
     {
         IReadOnlyList<DatabaseColumn>? columns = null;

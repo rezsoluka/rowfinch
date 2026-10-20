@@ -10,7 +10,12 @@ public static class ReadOnlySqlPolicy
     {
         if (string.IsNullOrWhiteSpace(sql) || sql.Length > 12_000) throw new AssistantSqlPolicyException("Use one SELECT of at most 12,000 characters.");
         var fragment = new TSql160Parser(true).Parse(new StringReader(sql), out var errors);
-        if (errors.Count != 0 || fragment is not TSqlScript { Batches.Count: 1 } script ||
+        if (errors.Count > 0)
+        {
+            var error = errors[0];
+            throw new AssistantSqlPolicyException($"SQL syntax error at line {error.Line}, column {error.Column}: {error.Message} Use one valid read-only SELECT or CTE.");
+        }
+        if (fragment is not TSqlScript { Batches.Count: 1 } script ||
             script.Batches[0].Statements.Count != 1 || script.Batches[0].Statements[0] is not SelectStatement)
             throw new AssistantSqlPolicyException("Use exactly one valid SELECT statement, optionally with a CTE. DECLARE, SET, local variables and multiple statements are not supported. Use CTEs or inline expressions for date boundaries.");
         fragment.Accept(new ReadOnlyVisitor());

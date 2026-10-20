@@ -56,6 +56,12 @@
                       <StackPanel Spacing="6">
                         <TextBlock Text="{Binding Status}" Classes="muted" FontWeight="SemiBold" TextWrapping="Wrap" />
                         <SelectableTextBlock Text="{Binding Answer}" TextWrapping="Wrap" FontFamily="DejaVu Sans Mono,monospace" FontSize="12" />
+                        <Border IsVisible="{Binding HasError}" Background="#34271C" CornerRadius="4" Padding="10">
+                          <SelectableTextBlock Text="{Binding Error}" TextWrapping="Wrap" Foreground="#F2C58A" />
+                        </Border>
+                        <Expander Header="Database request feedback" IsVisible="{Binding HasDatabaseFeedback}" IsExpanded="{Binding HasError}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                          <SelectableTextBlock Text="{Binding DatabaseFeedback}" TextWrapping="Wrap" />
+                        </Expander>
                       </StackPanel>
                     </Border>
                   </StackPanel>
